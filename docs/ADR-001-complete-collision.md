@@ -16,6 +16,24 @@ apps using CCC ONE data without CCC's written approval, no bots entering
 data. This is a contractual restriction with CCC Intelligent Solutions, not
 a technical limitation.
 
+**Confirmed against the actual license text** (complete-collision bot read
+the signed contract directly — `Complete Collision & Auto Repair LLC_CCC
+contract_4.27.26.pdf`, Section 2.4): the agreement prohibits compiling
+estimate data into a database, aggregating/co-mingling CCC ONE data or
+providing reports/analysis based on it "to anyone," incorporating
+third-party applications or using CCC ONE data in any application not
+owned by CCC "without the prior written approval of CCC," and using
+automation bots/scripts to enter data into CCC ONE.
+
+**Four named data-sharing mechanisms exist in the license** (bot's finding,
+citing specific sections) — each may have different permitted uses:
+EMS Extract (Section 25), CCC Secure Share Network (Section 26), CCC-DMS
+Interface (Section 34), CCC Indicators/Estimatic Reports (Section 27).
+**Jed needs to confirm which of these is actually licensed/active on the
+Complete Collision account** — this is more actionable than the original
+"get CCC's written approval" framing, since one of these named paths may
+already be permitted under the existing contract.
+
 **Effect on the handoff's design:**
 - Phase 1's "hand-port CCC ONE estimates into the dashboard" (handoff §2.1,
   §2.4) is a **human re-entering data they already have access to** — this
@@ -127,8 +145,56 @@ that can simply be closed off.
 
 1. Exact receptionist role boundaries — what should a receptionist see/edit
    vs. manager vs. owner?
-2. CCC ONE license clarification outcome (§1) — this is the single biggest
-   unresolved risk in the whole Complete Collision build.
+2. Which named CCC ONE data-sharing mechanism (EMS Extract, Secure Share,
+   DMS Interface, CCC Indicators) is actually licensed/active on Complete
+   Collision's account? This is now the more actionable form of the CCC ONE
+   license question — one of these may already be permitted under contract.
 3. UVEYE integration spec (output format, delivery method) once available.
 4. `CC Cristian` / `CC Operations` tabs — still live or legacy? (handoff §7
    item 6, unanswered this round)
+5. Build against the current draft (unsigned, bracketed-terms) PDR Crew
+   agreement now, or wait for signature?
+6. Does an existing accounting system (QuickBooks etc.) feed Direct RO
+   Costs / Labor Costs / Rent-Utilities for the settlement calc, or will
+   those be entered manually?
+
+## 7. New scope surfaced by the complete-collision bot's direct document review
+
+The bot read source documents I did not have access to (the signed CCC ONE
+contract, the draft Complete Collision/PDR Crew Operating Agreement, and
+the Elektrica/Complete Collision Operating Agreement) and found concrete,
+high-value scope beyond the original handoff:
+
+- **PDR Crew monthly settlement automation** — real, recurring, currently
+  manual accounting task. The co-branded "Complete Collision & PDR Crew"
+  site splits every RO into one of three categories (Collision/PDR/Hail),
+  each with its own profit-split formula (70/30, 5/95, 40/60 respectively,
+  net of direct RO costs, and for Collision only, labor + rent/utilities).
+  A monthly itemized statement is contractually due to PDR Crew within 10
+  days of month-end, paid within 15 days. **This is a strong v1 candidate**
+  — high value, well-specified by contract, not blocked by the CCC ONE
+  license question if built against manually-entered RO cost data rather
+  than live CCC ONE pull (see Phase 1 in §5 below).
+- **The PDR Crew agreement is still in draft** (bracketed terms, unsigned)
+  — Jed needs to decide whether to build against current draft terms and
+  adjust later, or wait for signature.
+- **Elektrica/Complete Collision Operating Agreement** confirms the
+  rental-repair routing rule referenced in the Elektrica handoff (repair
+  goes to the "Originating Shop") and separately contains a binding
+  18-month option for Chris Raeder/Autocraft to buy 33% of Complete
+  Collision, plus a non-solicit on Autocraft's OEM/fleet accounts (Rivian,
+  Lucid, Porsche). **This is an ownership/legal constraint, not a
+  dashboard feature** — noted only because it constrains what financial
+  reporting might later become sensitive/discoverable in the KPI views.
+
+## 8. Repo consolidation note
+
+Two local copies of this project existed independently: one at
+`AppData/Local/hermes/projects/complete-collision-dashboard` (this one,
+pushed to `github.com/Jethreo83/complete-collision-dashboard`) and one at
+`Documents/complete-collision-dashboard` (the bot's own workspace,
+git-initialized but never pushed, containing `PLAN.md`/`WORKLOG.md` with
+the license-text research folded into this ADR above). **The GitHub repo
+is the canonical one going forward** — the bot has been redirected to work
+there; its original local files are preserved as source material, not a
+competing plan.
