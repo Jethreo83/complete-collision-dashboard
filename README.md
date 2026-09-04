@@ -4,7 +4,7 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 004, tag `collision-migration-004`)
+## Status (as of migration 005, tag `collision-migration-005`)
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -80,6 +80,25 @@ discipline as VLS and Elektrica: schema and core business logic first.
   with 5 checks (both roles insertable, provisioning chain recorded,
   one-row-per-person and email uniqueness enforced, no permission
   restriction exists yet). Tagged `collision-migration-004`.
+- **`collision.content_item`** (`migrations/005_collision_content_item.sql`)
+  — schema-only migration of `content_manifest.json`'s structure, per
+  handoff §3.1. All 22 fields confirmed real from `CC_INVENTORY.md`'s
+  static code analysis of `content_library_routes.py`, kept verbatim.
+  **No data import** — the actual `content_manifest.json` lives on "the
+  mini," which this bot cannot reach (see ADR-001 §2's unresolved webhook
+  question for the same access gap). `ro_number` is deliberately a bare
+  text reference, not a foreign key, so orphaned/out-of-order RO
+  references in real messy data don't block import later. Derived tags
+  (`derived_tags` JSONB + GIN index) and a full-text search index on
+  `description` support the "by RO," "by uploader," and "red sedan, paint
+  booth, last month"-style search views handoff §3.1 explicitly asks for.
+  A partial unique index on `source_manifest_id` prevents duplicate
+  import if the JSON export is re-run, while exempting dashboard-native
+  uploads with no manifest id. Verified with 8 checks (all 22 fields
+  insertable, by-RO join, orphaned-RO tolerance, by-uploader/day
+  grouping, dedup constraint, dedup exemption for NULL ids, full-text
+  search match, `collision_app` read/write). Tagged
+  `collision-migration-005`.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -137,5 +156,11 @@ See `docs/ADR-001-complete-collision.md` §6.
 - `collision.estimate` writers for `ccc_one_webhook`/`ai_proposed`
   sources (the shape exists; nothing writes to it yet — Phase 2/3, see
   migrations/003_collision_estimate.sql header)
-- Content library migration, engagement-pull-back integration
+- **`content_manifest.json` data import** — schema exists
+  (`collision.content_item`), but the actual export lives on "the mini"
+  (no access — see ADR-001 §2). Handoff §2.5's full migration discipline
+  (export raw → inspect real keys → normalise → provenance → verify by
+  aggregate) can't run until that export is obtainable.
+- Content engine: per-job before/after generation, engagement-pull-back
+  integration (Phase 2, per handoff §3.2-3.3)
 - Backend/API server, frontend

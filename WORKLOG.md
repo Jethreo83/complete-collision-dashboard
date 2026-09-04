@@ -324,3 +324,65 @@ Other Phase 1 items that don't depend on that answer remain open:
 content library migration, JSON store migration (cc_local_data.json
 etc., handoff §2.5) if/when those exports become available.
 
+2026-09-04 (later still — content library schema, hermes cleared "your
+call on order" between content library and JSON-store migration)
+- Chose content library first: I have the confirmed 22-field schema from
+  CC_INVENTORY.md's static analysis of content_library_routes.py, but no
+  path to the actual data for either content_manifest.json OR
+  cc_local_data.json/cc_payment_audit.json/etc. — both are on "the mini."
+  Content library's schema-only shape was buildable and useful
+  regardless (handoff §3.1 wants the destination table ready "from day
+  one"); the JSON-store migration's §2.5 discipline (export raw → inspect
+  real keys → normalise → verify by aggregate) can't even start without
+  the export, so there's nothing productive to build ahead of that one
+  beyond noting it's blocked the same way.
+- Built migrations/005_collision_content_item.sql: collision.content_item
+  with all 22 manifest fields kept verbatim (business, collection,
+  description, drive_id, filename, mime, proxy_url, ro_number, service,
+  size, smr, source, stage, status, thumbnail, type, uploaded_at,
+  uploader, url, video_type, web_view_link — manifest's own 'id' renamed
+  source_manifest_id to avoid PK collision and preserve import
+  provenance). SCHEMA ONLY — no data import, stated plainly in the
+  migration header, same honesty discipline as every migration tonight.
+- ro_number deliberately NOT a foreign key to collision.job — real
+  manifest data may reference ROs that don't exist yet or were deleted,
+  and a hard FK would make a future real import fail on exactly the kind
+  of messy data this table exists to receive. Verified this design
+  choice actually works (CHECK 3: inserted a content_item referencing a
+  nonexistent RO, succeeded as intended) rather than just asserting it in
+  a comment.
+- Added derived_tags (JSONB, GIN-indexed) separate from the manifest's
+  own 'stage' field, and a full-text search index on description, to
+  support handoff §3.1's explicit view requirements: by RO, by uploader
+  per day, by uploader over time, and free-text search ("red sedan, paint
+  booth, last month").
+- Wrote scripts/verify_005.sql (8 checks) that exercise the actual views
+  handoff §3.1 asks for, not just schema existence: by-RO join, orphaned-
+  RO tolerance, by-uploader/day grouping (GROUP BY date_trunc), dedup
+  constraint on source_manifest_id, dedup exemption for NULL ids
+  (dashboard-native uploads), a real full-text search query matching "red
+  sedan," and collision_app read/write access.
+- Applied the shared-staging discipline again: checked staging state
+  before touching anything, found staff_user MISSING (another track's
+  reset had landed again since the migration-004 session — second time
+  this exact scenario has occurred tonight, confirming it's a live,
+  recurring condition, not a one-off). Reapplied migration 004 to restore
+  baseline, then applied and verified 005 — all 8 checks passed on real
+  output. Reset staging clean. Checked production's actual state
+  immediately before promoting (confirmed: customer/estimate/job/
+  job_event/staff_user/vehicle, no content_item, nothing unexpected).
+  Applied 005 to production, re-queried immediately after: content_item
+  now present alongside the rest.
+- Tagged collision-migration-005 only after confirming the commit landed
+  on origin/main via git ls-remote.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  fabricate or guess at any manifest data.
+
+Next up: JSON-store migration (cc_local_data.json, cc_payment_audit.json,
+etc., handoff §2.5) remains blocked on export access to "the mini" — no
+further schema work possible there without guessing at real key names,
+which handoff §2.5 explicitly warns against. Receptionist permissions
+still pending Jed. Backend/API/frontend work is the next unblocked
+category if further building is wanted before Jed's back.
+
