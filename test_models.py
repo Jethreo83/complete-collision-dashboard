@@ -10,6 +10,7 @@ from app.models import (
     EstimateSource,
     JobCategory,
     JobStatus,
+    JOB_STATUS_SEQUENCE,
     RepairOrder,
     validate_transition,
 )
@@ -113,6 +114,28 @@ def test_estimate_ai_proposed_can_be_unconfirmed():
 def test_cost_entry_category_enum_values_match_migration_006():
     expected = {"parts", "labor", "paint_materials", "sublet", "rental_reimbursement", "other"}
     assert {c.value for c in CostCategory} == expected
+
+
+def test_job_status_sequence_matches_migration_008_array_literal():
+    """migrations/008_collision_job_valid_transitions.sql's
+    job_status_rank() function hardcodes this exact same order as a SQL
+    array literal, deliberately NOT derived from this Python list (a
+    migration can't import Python at apply time). The migration's own
+    header flags this as a coupling that must be kept in sync by hand if
+    either side changes. This test is the guardrail: if someone reorders
+    JOB_STATUS_SEQUENCE without updating the SQL array (or vice versa),
+    this test won't catch the SQL side directly, but it locks the Python
+    side down so a silent, accidental reorder here is caught immediately
+    -- pairing with scripts/verify_008.sql's own checks (which prove the
+    SQL side's actual behavior) is what covers both halves of the
+    coupling."""
+    expected = [
+        JobStatus.UNDECIDED, JobStatus.CAME_IN, JobStatus.ESTIMATE,
+        JobStatus.TEARDOWN, JobStatus.WAITING_ON_PARTS, JobStatus.BODYWORK,
+        JobStatus.PAINT, JobStatus.DETAIL, JobStatus.DELIVERED,
+        JobStatus.CLOSED_OUT, JobStatus.MARKETING,
+    ]
+    assert JOB_STATUS_SEQUENCE == expected
 
 
 def _run_all():

@@ -4,7 +4,8 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 005 in production, migration 006 staging-only pending review, 2026-09-04)
+## Status (as of migrations 001-005, 007, 008 in production; migration
+006 staging-only pending Jed's review, 2026-09-04)
 
 **INCIDENT RESOLVED (rollback executed):** migration 006 was briefly
 applied to production by a CLI tooling accident (see WORKLOG.md's
@@ -176,6 +177,27 @@ discipline as VLS and Elektrica: schema and core business logic first.
   git-level rename and this doc update. Tagged `collision-migration-007`
   (not `-006`, to keep tag numbers aligned with file numbers; migration
   006 remains untagged pending Jed's review per the incident above).
+- **`collision.job_status_forward_only()` trigger**
+  (`migrations/008_collision_job_valid_transitions.sql`) — closes the
+  gap flagged in migration 002's SIMPLIFICATION note: a real,
+  DB-level state-machine guard on `collision.job.status`, not just an
+  append-only log with no enforcement. Enforces forward-only transitions
+  (skip-ahead allowed, matching the handoff's "typical path, not every
+  step mandatory" framing already encoded in `app/models.py`'s
+  `validate_transition()`), rejects backward AND no-op transitions.
+  Deliberately NOT presented as a copy of VLS's real
+  `valid_next_states()` pattern (never read, per this bot's standing
+  boundary) — independently designed from the handoff's plain-English
+  sequence and the already-tested Python reference implementation,
+  named differently (`job_status_forward_only`, not
+  `valid_next_states`) to avoid implying otherwise. The trigger applies
+  regardless of caller — `collision_app` is blocked by the same
+  mechanism as a privileged connection, verified directly (not just
+  assumed from the app layer's own validation). Verified with 8 checks:
+  forward transition, legal skip-ahead, backward rejected, state
+  unchanged after a rejected attempt, no-op rejected, an unrelated
+  column update completely unaffected, reaching the final `marketing`
+  state, and `collision_app` subject to the same rejection.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -283,14 +305,18 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
-- **Receptionist permission boundaries** — PENDING, logged for Jed in
-  vls-dashboard's `docs/OVERNIGHT_DECISIONS.md` per hermes (2026-09-04).
-  `collision.staff_user` (role enum + provisioning shape) exists;
-  wiring real RLS/route-guard permission checks per role is explicitly
-  deferred until that answer comes back.
+- **Migration 006 review** (`collision.site`, `collision.cost_entry`,
+  written by a separate concurrent session — see WORKLOG.md's
+  2026-09-04 "concurrent-session collision" entry) — awaiting Jed's
+  answer on one specific product question: should `job`'s flat cost
+  columns eventually become fully derived from `cost_entry`, or coexist?
+  Not decided solo per hermes's 2026-09-04 instruction. Otherwise the
+  migration reads as solid, reviewable work per hermes's independent
+  read of it.
 - `valid_next_states()`-style transition enforcement on `collision.job`
-  (currently append-only log, no SQL-level state-machine constraint — see
-  migrations/002_collision_job.sql's SIMPLIFICATION note)
+  — **RESOLVED** by `migrations/008_collision_job_valid_transitions.sql`
+  (a DB-level trigger, `collision.job_status_forward_only()`), see the
+  Schema section above.
 - `collision.estimate` writers for `ccc_one_webhook`/`ai_proposed`
   sources (the shape exists; nothing writes to it yet — Phase 2/3, see
   migrations/003_collision_estimate.sql header)

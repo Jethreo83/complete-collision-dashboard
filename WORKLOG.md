@@ -614,4 +614,82 @@ Updated open items for Jed:
   correctness, whether to derive job's flat cost columns from cost_entry)
   before promoting.
 
+2026-09-04 (independent verification from hermes, then migration 008)
+- hermes independently verified collision.staff_role_capability live on
+  production and pulled migrations/006_collision_site_and_cost.sql
+  directly from GitHub to review the other session's work: confirmed it
+  reads as "genuinely careful" (correctly staging-only, treated the
+  column drop as production-affecting despite 0 live rows, honestly
+  flagged its cost_category enum values as its own guess needing
+  correction) and correctly left untagged. Confirmed: the cost-derivation
+  open question in that migration is a real product decision hermes will
+  get from Jed directly — not something to decide solo. Cleared to keep
+  building on the rest of the order.
+- Coordination gap acknowledged: hermes has no way to proactively notify
+  this session when another instance of this same bot profile runs
+  concurrently — a real limitation, not something fixable from either
+  side right now. Adopted as standing practice: check `git log`/`git
+  fetch` for unexpected commits at the START of any further work in this
+  session, not just before promoting, since two sessions of the same
+  profile can run concurrently without either being told.
+- Corrected README.md's now-stale "Not yet built" entry for receptionist
+  permissions (migration 007 already resolved it) before picking up new
+  work, so anyone reading the docs — including a future concurrent
+  session — sees accurate state.
+- Picked the next genuinely unblocked item from the build order: the
+  DB-level job-status state-machine enforcement flagged as missing since
+  migration 002's SIMPLIFICATION note. This doesn't touch migration 006's
+  undecided site/cost design (deliberately avoided per hermes's "don't
+  decide that one solo" instruction) and doesn't need Jed's input.
+- Built migrations/008_collision_job_valid_transitions.sql:
+  collision.job_status_forward_only() trigger function +
+  trg_job_status_forward_only BEFORE UPDATE OF status trigger on
+  collision.job. Enforces the exact same forward-only, skip-ahead-
+  allowed, no-backward, no-no-op rule already implemented and tested in
+  app/models.py's validate_transition() — independently designed from
+  the handoff's plain-English sequence, NOT presented as a copy of VLS's
+  real valid_next_states() (never read, per this bot's standing
+  boundary), named job_status_forward_only specifically to avoid that
+  implication.
+- Caught and fixed a real bug in my own first draft before it ever
+  touched a database: initially wrote the trigger with a `WHEN
+  (OLD.status IS DISTINCT FROM NEW.status)` clause, which would have
+  made Postgres SKIP the trigger entirely on a no-op update — directly
+  contradicting the trigger function's own logic, which explicitly
+  REJECTS no-op transitions as an error. Caught this by re-reading my
+  own migration before testing, not by a failed test — removed the WHEN
+  clause, documented why in the migration file itself.
+- Wrote scripts/verify_008.sql (8 checks: legal forward transition,
+  legal skip-ahead, backward rejected, state unchanged after the
+  rejected attempt, no-op rejected, an unrelated column update
+  completely unaffected by the trigger, reaching the final `marketing`
+  state, collision_app subject to the same rejection as a privileged
+  connection).
+- Added a Python-side guardrail: test_models.py's new
+  test_job_status_sequence_matches_migration_008_array_literal locks
+  JOB_STATUS_SEQUENCE's exact order against a hardcoded expectation,
+  pairing with verify_008.sql (which proves the SQL side's actual
+  behavior) to cover both halves of a coupling the migration's own
+  header explicitly flags: the SQL array literal and the Python list
+  must be kept in sync by hand, since a migration can't import Python at
+  apply time. Ran test_models.py: 12/12 passed (11 previous + 1 new).
+- Checked git log/git fetch for new commits before starting (per the
+  practice adopted above) — none found, clean baseline. Checked
+  staging's real state before touching it (matched expected: no drift
+  this time). Applied 008 to staging, ran verify_008.sql — all 8 checks
+  passed by real output. Reset staging clean. Checked production's real
+  state immediately before promoting (confirmed exactly matching, no
+  drift). Applied 008 to production, confirmed by direct query
+  (pg_trigger lookup) that trg_job_status_forward_only genuinely exists
+  on the production table, not just that the CREATE statement didn't
+  error.
+- Updated README.md: moved the state-machine item from "Not yet built"
+  to the Schema section as RESOLVED, updated the top-line Status
+  summary to include migrations 007 and 008.
+- Tagged collision-migration-008 only after confirming the commit landed
+  on origin/main via git ls-remote.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  touch migration 006's undecided design question.
+
 
