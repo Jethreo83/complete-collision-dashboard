@@ -376,6 +376,34 @@ and requires clarification before any live integration is built.
   uvicorn's actual listening worker PID differ on this host, first kill
   attempt missed the real listener).
 
+- **New this cron cycle (2026-09-06, later still):** added the write-side
+  route the previous cycle's own "Next up" list flagged as missing —
+  `POST /jobs/{ro_number}/estimates`, wiring `create_manual_estimate()`
+  (previously only reachable from scripts/tests) into a real HTTP write
+  path. Phase 1 scope unchanged: request body is `{content: dict, actor:
+  str}`, always creates `source=MANUAL`, always confirmed at creation
+  (Estimate's own CHECK-mirroring `__post_init__` still enforces this).
+  3 new tests in `test_api.py` (happy path incl. verifying the route
+  passes the resolved job's numeric `id` — not the RO-number string — to
+  the repository layer; unknown-RO 404; repository `ValueError` → 400).
+  Full suite now 51/51. Verified by **real HTTP execution** (not just
+  mocks): wrote `scripts/_smoke_http_create_estimate.py`, started a real
+  `uvicorn` process against real staging, created a real job via the
+  same repository functions the routes use, then hit the real HTTP
+  endpoint with real `requests` calls: two sequential `POST`s produced
+  version 1 then version 2, confirmed `jsonb` content round-tripped
+  exactly (`"total": "4700.00"` came back unchanged as a string, not
+  silently coerced), confirmed `GET .../estimates` returns both in order
+  and `GET .../estimates/latest` returns version 2, confirmed an unknown
+  RO number returns a real 404 through HTTP (not just a repository-layer
+  exception) — 11/11 checks passed. Test data (person/customer/vehicle/
+  job/estimates) created and deleted by explicit ID/VIN/RO-number match,
+  confirmed 0 rows remain by an independent follow-up query. `uvicorn`
+  killed and confirmed stopped via `netstat` (listener PID, not the
+  launcher PID) + a timed-out `curl` afterward, before considering the
+  session's server process actually gone — same discipline flagged as a
+  host-specific gotcha in the prior cycle's entry above.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

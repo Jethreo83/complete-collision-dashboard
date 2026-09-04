@@ -159,6 +159,19 @@ class StaffActiveRequest(BaseModel):
     actor: str
 
 
+class EstimateCreateRequest(BaseModel):
+    """Phase 1 manual-entry only, same rule as every other write path in
+    this repo -- content is whatever CCC ONE PDF/printout data was typed
+    in by staff, stored as-is (jsonb). Matches
+    app.repository.create_manual_estimate()'s scope exactly: always
+    source=MANUAL, always confirmed at creation (no separate draft/review
+    step exists yet in Phase 1 -- see Estimate.__post_init__'s CHECK
+    mirror for why confirmed_content can't be added later without also
+    supplying confirmed_by/confirmed_at)."""
+    content: dict
+    actor: str
+
+
 def _ro_to_out(ro) -> RepairOrderOut:
     return RepairOrderOut(
         id=ro.id, ro_number=ro.ro_number, vehicle_id=ro.vehicle_id,
@@ -299,12 +312,10 @@ def recalculate_job_costs(ro_number: str, body: RecalculateRequest, cur=Depends(
 # ---------------------------------------------------------------------------
 # Estimates (2026-09-06 backlog item #2: get_estimates_for_job()/
 # get_latest_estimate_for_job() existed in app/repository.py since the
-# earlier cron cycle but had no HTTP route -- closing that gap here.
-# Read-only: Phase 1 has no route for creating estimates via HTTP yet
-# (create_manual_estimate() is currently only exercised by scripts/tests;
-# adding a POST route is a reasonable next step but out of scope for this
-# cycle, which is specifically closing the "reader exists, no route"
-# backlog item, not adding new write surface).
+# earlier cron cycle but had no HTTP route -- closed that gap first.
+# POST added this cycle: create_manual_estimate() previously only reachable
+# from scripts/tests, now has a real write route. Still Phase 1 manual-only
+# -- no CCC ONE contact, content is whatever staff typed in.
 # ---------------------------------------------------------------------------
 
 @app.get("/jobs/{ro_number}/estimates", response_model=list[EstimateOut])
@@ -312,6 +323,18 @@ def get_job_estimates(ro_number: str, cur=Depends(get_cursor)):
     if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
         raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
     return [_estimate_to_out(e) for e in repo.get_estimates_for_job(cur, ro_number)]
+
+
+@app.post("/jobs/{ro_number}/estimates", response_model=EstimateOut)
+def create_job_estimate(ro_number: str, body: EstimateCreateRequest, cur=Depends(get_cursor)):
+    ro = repo.get_repair_order_by_ro_number(cur, ro_number)
+    if ro is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    try:
+        created = repo.create_manual_estimate(cur, ro.id, body.content, body.actor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _estimate_to_out(created)
 
 
 @app.get("/jobs/{ro_number}/estimates/latest", response_model=EstimateOut)

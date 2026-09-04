@@ -1517,5 +1517,136 @@ now has a real primitive to close it)
   stage/commit/modify any of them.
 
 
+Session: 2026-09-06/07 (cron cycle, continuous-build task, later still)
+
+STARTING STATE CHECKED FIRST (per standing practice)
+------------------------------------------------------
+- git fetch/log/status: clean, up to date with origin/main, no
+  concurrent-session drift, no uncommitted files left by any other
+  track.
+- Direct schema query against BOTH branches before touching anything:
+  production and staging both have exactly the 10 collision.* tables
+  expected (content_item, cost_entry, customer, estimate, job,
+  job_event, site, staff_role_capability, staff_user, vehicle) --
+  matches migrations 001-010 fully applied to both. Production
+  confirmed 0 rows on job/customer/vehicle/estimate/staff_user both
+  before and after this session's work.
+- neonctl v4.14.0 connection-string now also requires --role-name when
+  multiple roles exist on a branch (vls_app, platform_identity_service,
+  elektrica_app, collision_app, neondb_owner, shell_app all present) --
+  used neondb_owner explicitly for both branches, confirmed the two
+  connection strings resolve to two different hosts
+  (ep-damp-bird-a5vtcqmv = production, ep-bold-leaf-a5dr4amg = staging)
+  before trusting either.
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added POST /jobs/{ro_number}/estimates (EstimateCreateRequest schema:
+  content: dict, actor: str) wiring app.repository.create_manual_estimate()
+  -- previously a repository function with no HTTP route, flagged as
+  "Next up" item #1 in the prior cycle's own WORKLOG entry. 404 if the
+  RO doesn't exist, 400 on a repository ValueError (mirrors every other
+  write route's error-handling pattern in this file). Does not change
+  Phase 1 scope: still manual-content-only, still always source=MANUAL,
+  still always confirmed at creation.
+
+test_api.py
+  3 new tests: test_create_job_estimate_success (also asserts the route
+  passes ro.id, the numeric job id, not the ro_number string, to
+  create_manual_estimate -- catches a real class of wiring bug the other
+  routes' tests already guard against), test_create_job_estimate_job_not_found,
+  test_create_job_estimate_repo_value_error_returns_400. Full suite now
+  51/51 (up from 48/48).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_create_estimate.py
+  Real HTTP-level smoke test -- deliberately NOT just another
+  TestClient-mocked test (those already exist in test_api.py). Starts a
+  real uvicorn process against real staging, creates a real job via the
+  same repository functions the app already uses
+  (create_customer_for_existing_person/get_or_create_vehicle/
+  get_or_create_site/create_repair_order -- same pattern as
+  scripts/_smoke_api_estimates_staff.py, not hand-rolled SQL, which
+  caught a real NOT NULL violation on job.updated_by on the first
+  attempt when I tried raw INSERTs instead), then drives the new route
+  with real `requests` HTTP calls (not psycopg2 direct calls) to also
+  exercise pydantic (de)serialization and jsonb round-tripping, which
+  mocks alone can't catch. Cleans up via explicit ID/VIN/RO-number match
+  (never a blanket delete), then independently re-queries to confirm 0
+  rows remain.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- Full suite: test_models.py 15/15, test_api.py 29/29, test_pdr_settlement.py
+  7/7 = 51/51, before AND after the change.
+- Started a real `uvicorn app.api:app --port 8010` background process
+  with COLLISION_DB_ENV_VAR pointed at STAGING (neondb_owner --
+  collision_app remains NOLOGIN, same unresolved gap documented in
+  app/db.py's header since migration 001; no session has yet run this
+  through a real collision_app connection). Confirmed listening via
+  `curl /health` (200) before running the smoke script against it.
+- Ran scripts/_smoke_http_create_estimate.py against that live server:
+  first attempt failed with a real, useful error (NotNullViolation on
+  job.updated_by) because I'd hand-rolled the job INSERT instead of
+  using repo.create_repair_order() -- fixed by switching setup_prereqs()
+  to call the real repository functions, matching the established
+  pattern in scripts/_smoke_api_estimates_staff.py. Re-ran: 11/11 checks
+  passed -- two sequential real POSTs produced version 1 then version 2,
+  GET list returned both in the correct order, GET latest returned
+  version 2 with jsonb content round-tripped exactly (no silent type
+  coercion), an unknown RO number produced a real 404 over HTTP, cleanup
+  confirmed by an independent follow-up query (0 job/vehicle/person rows
+  matching this run's unique identifiers).
+- Killed the uvicorn process and verified it was ACTUALLY stopped, not
+  just that taskkill printed success: got the real listening PID from
+  `netstat -ano | grep :8010 | grep LISTENING` (10012) rather than
+  trusting the launcher's own reported PID, killed that PID specifically,
+  then confirmed both a `curl` timeout (no response, not even a
+  connection-refused-fast-fail) and a follow-up `netstat` showing no
+  LISTENING entry on 8010 before considering it done -- same discipline
+  the prior cycle's WORKLOG entry flagged as a host-specific gotcha,
+  re-applied rather than re-learned the hard way.
+- Note on my own tooling: the `taskkill //F //PID <pid>` bash-friendly-
+  looking slash form silently fails ("Invalid argument/option") on this
+  host's taskkill.exe -- must use `taskkill /F /PID <pid>` (native
+  Windows single-slash flags), confirmed by testing the failing form
+  first, then the working form, side by side.
+- Re-confirmed production AND staging both still show 0 rows on every
+  collision.* table (and platform.person's smoke-test row) after this
+  session's cleanup -- no leftover data on either branch.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Same CCC ONE license / content_manifest.json export blockers as every
+  prior session, unchanged.
+- Migration 006/010 promotion already resolved in a prior cycle (both
+  now live on production) -- no open migration-promotion decision
+  remains for Jed right now.
+- provision_new_staff_user() (brand-new platform.person + staff_user)
+  still has no HTTP route -- same privileged-connection reasoning as
+  before, correctly deferred again.
+- No frontend, no auth/session layer -- unchanged blockers, same
+  reasoning documented in app/api.py's own header.
+- The identity-service swap (platform.match_or_create_person(), logged
+  2026-09-06) still not acted on -- still flagged "not urgent," and this
+  cycle's new estimate route doesn't touch platform.person at all, so it
+  wasn't a natural trigger to pick it up either. create_person_and_customer()
+  and provision_new_staff_user() remain the two call sites to fix
+  whenever either is next touched for an unrelated reason.
+
+Next up (not started this session, flagged rather than silently
+deferred):
+1. No PATCH/PUT route for editing job.claim_number/insurer/adjuster_name/
+   posture after intake -- these are currently write-once at
+   create_repair_order() time; Phase 1 CSV/manual entry may need to
+   revise them (e.g. claim number arrives after initial intake). Not
+   built this cycle -- flagging as a plausible next gap rather than
+   guessing at the right shape without a concrete need in front of me.
+2. Same CCC ONE / content_manifest.json blockers as always.
+
+
+
 
 

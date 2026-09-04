@@ -231,6 +231,41 @@ def test_get_job_latest_estimate_none_yet():
     check("test_get_job_latest_estimate_none_yet", r.status_code == 404, r.text)
 
 
+def test_create_job_estimate_success():
+    created = _sample_estimate(id=9, version=1, draft_content={"total": "3200.00"},
+                                confirmed_content={"total": "3200.00"})
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.create_manual_estimate", return_value=created) as mocked:
+        r = client.post(
+            "/jobs/RO-10001/estimates",
+            json={"content": {"total": "3200.00"}, "actor": "jed"},
+        )
+    check("test_create_job_estimate_status", r.status_code == 200, r.text)
+    check("test_create_job_estimate_version", r.json()["version"] == 1)
+    # confirms the route passes ro.id (not the ro_number string) through to
+    # the repository layer, matching create_manual_estimate(cur, job_id, ...)
+    check("test_create_job_estimate_calls_with_job_id", mocked.call_args[0][1] == _sample_ro().id)
+
+
+def test_create_job_estimate_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.post(
+            "/jobs/RO-NOPE/estimates",
+            json={"content": {"total": "1.00"}, "actor": "jed"},
+        )
+    check("test_create_job_estimate_job_not_found", r.status_code == 404, r.text)
+
+
+def test_create_job_estimate_repo_value_error_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.create_manual_estimate", side_effect=ValueError("confirmed_content required")):
+        r = client.post(
+            "/jobs/RO-10001/estimates",
+            json={"content": {"total": "1.00"}, "actor": "jed"},
+        )
+    check("test_create_job_estimate_repo_value_error_returns_400", r.status_code == 400, r.text)
+
+
 # ---------------------------------------------------------------------------
 # Staff routes (2026-09-06 backlog item #1)
 # ---------------------------------------------------------------------------
@@ -328,6 +363,8 @@ if __name__ == "__main__":
         test_job_not_found_on_costs_endpoint,
         test_get_job_estimates, test_get_job_estimates_job_not_found,
         test_get_job_latest_estimate_found, test_get_job_latest_estimate_none_yet,
+        test_create_job_estimate_success, test_create_job_estimate_job_not_found,
+        test_create_job_estimate_repo_value_error_returns_400,
         test_provision_staff_success, test_provision_staff_bad_role_returns_400,
         test_provision_staff_duplicate_returns_400,
         test_get_staff_found, test_get_staff_not_found,
