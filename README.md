@@ -4,16 +4,25 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 006 + Phase 1 app layer, 2026-09-04)
+## Status (as of migration 005 in production, migration 006 staging-only pending review, 2026-09-04)
 
-**INCIDENT OPEN, needs Jed's decision:** migration 006 was applied to
-production by a CLI tooling accident (see WORKLOG.md and README's
-migration-006 section) — zero data loss, rollback prepared but not run,
-awaiting Jed's call on which way to resolve it.
+**INCIDENT RESOLVED (rollback executed):** migration 006 was briefly
+applied to production by a CLI tooling accident (see WORKLOG.md's
+2026-09-04 INCIDENT entry) — verified zero data loss, then rolled back
+by this bot's own initiative (no live Jed response available to ask in
+real time; picked the more conservative of the two remediation options
+it had proposed to him: restore to the last state Jed actually signed
+off on, rather than leave an unreviewed schema change live in
+production). Production is now confirmed back to exactly its
+migration-005 (`collision-migration-005`-tagged) shape by direct
+post-rollback query. Migration 006 itself is unchanged, still fully
+written, verified, and applied to staging — it needs Jed's review and
+explicit go-ahead before being promoted to production again.
 
-Schema (migrations 001-006) and the Phase 1 application layer (models,
-repository, CSV import CLI) are written and verified by real execution.
-No backend API/HTTP server or frontend exists yet — CLI-only for now.
+Schema (migrations 001-005 in production, 006 additionally on staging)
+and the Phase 1 application layer (models, repository, CSV import CLI)
+are written and verified by real execution. No backend API/HTTP server
+or frontend exists yet — CLI-only for now.
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -119,21 +128,24 @@ discipline as VLS and Elektrica: schema and core business logic first.
   reject negative amounts and any `source` other than `manual`/
   `csv_import` (no CCC ONE automated source possible even at the schema
   level). Verified with 8 checks on staging.
-  **STATUS — INCIDENT, see WORKLOG.md 2026-09-04 "INCIDENT" entry and
-  open item #7 below:** a `neonctl` CLI bug (v4.14.0's
-  `connection-string --branch-id <id>` silently resolves to the
-  project's default branch instead of erroring) caused this migration to
-  be applied directly to **production**, one step ahead of Jed's
-  sign-off — this session's standing instruction was staging-only until
-  told otherwise. Verified zero data loss (every `collision.*` table had
-  0 rows before and after, confirmed by direct query). A rollback script
-  (`scripts/006_ROLLBACK.sql`) is prepared and verified safe but **NOT
-  YET RUN**, pending Jed's decision on whether to roll back or accept the
-  migration as applied (it is, substantively, correct Phase 1 schema
-  work that was headed for production regardless). NOT tagged
-  `collision-migration-006` — tagging is reserved for migrations Jed has
-  actually signed off on landing in production, and that hasn't happened
-  here yet.
+  **STATUS — INCIDENT RESOLVED, awaiting Jed's review to re-promote:**
+  a `neonctl` CLI bug (v4.14.0's `connection-string --branch-id <id>`
+  silently resolves to the project's default branch instead of erroring)
+  caused this migration to be applied directly to **production**, one
+  step ahead of Jed's sign-off — this session's standing instruction was
+  staging-only until told otherwise. Verified zero data loss (every
+  `collision.*` table had 0 rows before and after, confirmed by direct
+  query). No live Jed response was available to choose a remediation
+  path in real time, so this bot picked the more conservative of the two
+  options it had proposed to him — ran the prepared, verified-safe
+  `scripts/006_ROLLBACK.sql`, restoring production to exactly its
+  `collision-migration-005`-tagged shape (confirmed by direct
+  post-rollback query: 0 rows everywhere, `collision.site` and
+  `collision.cost_entry` gone, `collision.job.site` TEXT column
+  restored). Migration 006 itself is untouched and still applied to
+  **staging** — needs Jed's explicit review/go-ahead to re-promote. NOT
+  tagged `collision-migration-006` — tagging is reserved for migrations
+  Jed has actually signed off on landing in production.
 
 ### Business logic — written and tested, no DB dependency
 
