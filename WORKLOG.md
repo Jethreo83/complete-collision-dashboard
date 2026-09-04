@@ -1318,5 +1318,36 @@ along the way -- documenting fully)
   end-to-end for commit()/autocommit=True calls specifically, not just
   trust that "it worked on staging" implies "it's safe everywhere."
 
+2026-09-06 (logged for future work, NOT acted on: identity-service gap
+now has a real primitive to close it)
+- hermes: platform.match_or_create_person is live (vls-dashboard
+  migration 008, tag vls-migration-008-person-match) -- the shared
+  identity-service primitive app/db.py's and app/repository.py's own
+  docstrings (create_person_and_customer(), provision_new_staff_user())
+  have been explicitly flagging as "no such service exists yet, this is
+  why collision_app has no INSERT grant on platform.person" since
+  migration 001. Match logic: phone/email first, then name+DOB; exact
+  matches attach, close-but-not-exact queues for human review, NULL DOB
+  never matches (never silently attaches two different people who both
+  happen to have no DOB on file), no match creates new.
+- NOT acted on this session -- explicitly "not urgent, next time you
+  touch those functions." Two real call sites to fix when that happens:
+  app/repository.py's create_person_and_customer() (currently a raw
+  INSERT INTO platform.person) and provision_new_staff_user() (same
+  pattern, staff side) -- both should call
+  platform.match_or_create_person() via platform_identity_service
+  instead. ALSO APPLIES to the concurrent session's currently-
+  uncommitted staff-provisioning work sitting in app/api.py/test_api.py
+  right now (staff provisioning API endpoints) -- if/when that lands,
+  it likely calls provision_new_staff_user() or an equivalent path that
+  will need the same swap. Whoever picks this up next (this session or
+  the concurrent one) should check this entry before writing a new
+  platform.person INSERT anywhere in this codebase.
+- Left app/api.py, test_api.py, scripts/_diag_check_customer_row.py
+  (the other session's uncommitted files) completely untouched, same as
+  every other check this session -- only read git status, didn't
+  stage/commit/modify any of them.
+
+
 
 

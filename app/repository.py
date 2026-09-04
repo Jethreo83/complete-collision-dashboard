@@ -124,6 +124,18 @@ def create_person_and_customer(
     new customer today, while the real fix (calling or replicating the
     identity service's match-before-create flow) is an open question for
     Jed — see README.md "Open questions".
+
+    *** GAP NOW CLOSED, NOT YET WIRED HERE (per hermes, 2026-09-06):
+    platform.match_or_create_person() is live (vls-dashboard migration
+    008, tag vls-migration-008-person-match) -- exactly the shared
+    identity-service primitive this docstring was waiting on. Match
+    logic: phone/email first, then name+DOB; exact matches attach,
+    close-but-not-exact queues for human review, NULL DOB never matches,
+    no match creates new. NEXT TIME THIS FUNCTION IS TOUCHED: swap the
+    raw INSERT below for a call to platform.match_or_create_person() via
+    platform_identity_service, instead of blindly creating a new person
+    row every time. Not done in this pass (flagged "not urgent" by Jed)
+    -- see WORKLOG.md's 2026-09-06 entry for the full context. ***
     """
     email_normalized = email.strip().lower() if email else None
     phone_normalized = phone.strip() if phone else None
@@ -545,6 +557,18 @@ def provision_new_staff_user(
     correct: a real backend authenticating as collision_app should call
     provision_staff_user_for_existing_person() against a person row an
     admin already created, not this convenience wrapper.
+
+    *** GAP NOW CLOSED, NOT YET WIRED HERE (per hermes, 2026-09-06):
+    same platform.match_or_create_person() note as
+    create_person_and_customer()'s docstring above -- NEXT TIME THIS
+    FUNCTION IS TOUCHED, swap the raw INSERT below for a call to
+    platform.match_or_create_person() via platform_identity_service
+    instead of blindly creating a new person row every time a staff
+    member is provisioned (a real staff member could plausibly already
+    exist as a platform.person from being a customer/renter elsewhere in
+    the shared schema -- exactly the cross-business case this bot's own
+    memory tracks). Not done in this pass; see WORKLOG.md's 2026-09-06
+    entry. ***
     """
     email_normalized = google_email.strip().lower()
     cur.execute(
