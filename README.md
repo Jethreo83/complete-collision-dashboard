@@ -344,6 +344,38 @@ and requires clarification before any live integration is built.
   15/15, `test_api.py` still 13/13, `test_pdr_settlement.py` still 7/7,
   no regressions.
 
+- **New this cron cycle (2026-09-06, continuous-build):** wired the
+  estimate/staff repository functions from the previous cycle into real
+  HTTP routes on `app/api.py` — the natural next step that cycle's own
+  "Next up" section flagged. Added: `GET /jobs/{ro_number}/estimates`,
+  `GET /jobs/{ro_number}/estimates/latest`, `POST /staff` (provisions an
+  existing person as staff — deliberately does NOT expose
+  `provision_new_staff_user()`, which needs a privileged non-`collision_app`
+  connection app/api.py has no way to supply safely today), `GET
+  /staff/{google_email}`, `GET /staff/{google_email}/capability`, `POST
+  /staff/{google_email}/active`. Same no-auth-yet scope decision as every
+  other route in this file. 13 new tests in `test_api.py` (happy path +
+  404s + bad-enum/duplicate 400s for each new route) — `test_api.py` now
+  26/26, full suite 48/48. Verified by **real execution**: started the
+  actual `uvicorn` process, hit `GET /jobs/RO-DOES-NOT-EXIST/estimates`
+  and `GET /staff/nobody@completecollisions.com`(`/capability`) through
+  the live production DB connection (all real 404s, read-only, 0 rows
+  touched), then wrote `scripts/_smoke_api_estimates_staff.py` and ran it
+  against real staging (built via the SAME repository functions the
+  routes call — `create_customer_for_existing_person`,
+  `get_or_create_vehicle`, `get_or_create_site`, `create_repair_order`,
+  `create_manual_estimate`, the staff-provisioning functions — under `SET
+  ROLE collision_app`, the real access pattern): provisioned a real
+  staff_user, confirmed capability flips full/NULL on deactivate,
+  inserted 2 real estimate versions and confirmed `get_estimates_for_job`
+  returns them in order and `get_latest_estimate_for_job` returns the
+  newest, confirmed an unknown RO returns `[]` rather than erroring — then
+  rolled back and independently re-queried staging to confirm 0 rows
+  persisted. Server process confirmed killed afterward (verified via
+  `netstat`, not just the kill command's exit code — the launcher PID and
+  uvicorn's actual listening worker PID differ on this host, first kill
+  attempt missed the real listener).
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from app import db
 from app import repository as repo
-from app.models import CostCategory, JobStatus
+from app.models import CostCategory, JobStatus, StaffRole
 
 app = FastAPI(
     title="Complete Collision Dashboard API (Phase 1, internal/local only)",
@@ -120,6 +120,45 @@ class RecalculateRequest(BaseModel):
     actor: str
 
 
+class EstimateOut(BaseModel):
+    id: int
+    job_id: int
+    version: int
+    source: str
+    draft_content: Optional[dict] = None
+    confirmed_content: Optional[dict] = None
+    confirmed_by: Optional[str] = None
+
+
+class StaffUserOut(BaseModel):
+    id: int
+    person_id: int
+    role: str
+    google_email: str
+    active: bool
+    provisioned_by_staff_user_id: Optional[int] = None
+
+
+class StaffProvisionRequest(BaseModel):
+    """Provisions a staff_user for an ALREADY-EXISTING platform.person.
+    Matches app.repository.provision_staff_user_for_existing_person()'s
+    scope exactly -- this route deliberately does NOT expose
+    provision_new_staff_user() (creating a brand-new platform.person row),
+    since that requires a privileged (non-collision_app) DB connection per
+    app/db.py's documented role gap. Creating new person rows stays an
+    admin-script operation until an identity-service integration exists."""
+    person_id: int
+    role: str
+    google_email: str
+    actor: str
+    provisioned_by_staff_user_id: Optional[int] = None
+
+
+class StaffActiveRequest(BaseModel):
+    active: bool
+    actor: str
+
+
 def _ro_to_out(ro) -> RepairOrderOut:
     return RepairOrderOut(
         id=ro.id, ro_number=ro.ro_number, vehicle_id=ro.vehicle_id,
@@ -146,6 +185,22 @@ def _cost_to_out(c) -> CostEntryOut:
         id=c.id, job_id=c.job_id, category=c.category.value,
         description=c.description, amount=c.amount, incurred_at=c.incurred_at,
         source=c.source, source_file=c.source_file,
+    )
+
+
+def _estimate_to_out(e) -> EstimateOut:
+    return EstimateOut(
+        id=e.id, job_id=e.job_id, version=e.version, source=e.source.value,
+        draft_content=e.draft_content, confirmed_content=e.confirmed_content,
+        confirmed_by=e.confirmed_by,
+    )
+
+
+def _staff_to_out(s) -> StaffUserOut:
+    return StaffUserOut(
+        id=s.id, person_id=s.person_id, role=s.role.value,
+        google_email=s.google_email, active=s.active,
+        provisioned_by_staff_user_id=s.provisioned_by_staff_user_id,
     )
 
 
@@ -239,3 +294,90 @@ def recalculate_job_costs(ro_number: str, body: RecalculateRequest, cur=Depends(
     if ro is None:
         raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
     return _ro_to_out(ro)
+
+
+# ---------------------------------------------------------------------------
+# Estimates (2026-09-06 backlog item #2: get_estimates_for_job()/
+# get_latest_estimate_for_job() existed in app/repository.py since the
+# earlier cron cycle but had no HTTP route -- closing that gap here.
+# Read-only: Phase 1 has no route for creating estimates via HTTP yet
+# (create_manual_estimate() is currently only exercised by scripts/tests;
+# adding a POST route is a reasonable next step but out of scope for this
+# cycle, which is specifically closing the "reader exists, no route"
+# backlog item, not adding new write surface).
+# ---------------------------------------------------------------------------
+
+@app.get("/jobs/{ro_number}/estimates", response_model=list[EstimateOut])
+def get_job_estimates(ro_number: str, cur=Depends(get_cursor)):
+    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    return [_estimate_to_out(e) for e in repo.get_estimates_for_job(cur, ro_number)]
+
+
+@app.get("/jobs/{ro_number}/estimates/latest", response_model=EstimateOut)
+def get_job_latest_estimate(ro_number: str, cur=Depends(get_cursor)):
+    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    estimate = repo.get_latest_estimate_for_job(cur, ro_number)
+    if estimate is None:
+        raise HTTPException(status_code=404, detail=f"No estimates for ro_number={ro_number!r}")
+    return _estimate_to_out(estimate)
+
+
+# ---------------------------------------------------------------------------
+# Staff (2026-09-06 backlog item #1: provision_staff_user_for_existing_person()/
+# set_staff_user_active()/get_staff_capability() existed in app/repository.py
+# since the earlier cron cycle but had no HTTP route -- closing that gap
+# here. Deliberately does NOT expose provision_new_staff_user() (creates a
+# NEW platform.person row) -- that requires a privileged, non-collision_app
+# connection per app/db.py's documented role gap, and this whole module
+# runs unauthenticated with no notion of "who is calling," so exposing an
+# operation that can only safely run under an elevated DB role over an
+# open HTTP route would be a bigger scope jump than this cycle should make
+# unilaterally. Same "don't wire unbuilt architecture" discipline already
+# applied elsewhere in this file (no auth route-guards; migrations/007's
+# own no-RLS decision).
+# ---------------------------------------------------------------------------
+
+@app.post("/staff", response_model=StaffUserOut)
+def provision_staff(body: StaffProvisionRequest, cur=Depends(get_cursor)):
+    try:
+        role = StaffRole(body.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role={body.role!r} must be one of {[r.value for r in StaffRole]}",
+        )
+    try:
+        staff = repo.provision_staff_user_for_existing_person(
+            cur, body.person_id, role, body.google_email, body.actor,
+            provisioned_by_staff_user_id=body.provisioned_by_staff_user_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _staff_to_out(staff)
+
+
+@app.get("/staff/{google_email}", response_model=StaffUserOut)
+def get_staff(google_email: str, cur=Depends(get_cursor)):
+    staff = repo.get_staff_user_by_google_email(cur, google_email)
+    if staff is None:
+        raise HTTPException(status_code=404, detail=f"No staff_user with google_email={google_email!r}")
+    return _staff_to_out(staff)
+
+
+@app.get("/staff/{google_email}/capability")
+def get_staff_capability(google_email: str, cur=Depends(get_cursor)):
+    if repo.get_staff_user_by_google_email(cur, google_email) is None:
+        raise HTTPException(status_code=404, detail=f"No staff_user with google_email={google_email!r}")
+    capability = repo.get_staff_capability(cur, google_email)
+    return {"google_email": google_email.strip().lower(), "capability_level": capability}
+
+
+@app.post("/staff/{google_email}/active", response_model=StaffUserOut)
+def set_staff_active(google_email: str, body: StaffActiveRequest, cur=Depends(get_cursor)):
+    try:
+        staff = repo.set_staff_user_active(cur, google_email, body.active, body.actor)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _staff_to_out(staff)

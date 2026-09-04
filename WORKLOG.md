@@ -1255,6 +1255,174 @@ promoted to production yet -- per his instruction, reporting back first)
   promoting to production as usual"). Holding for his go-ahead before
   the next staging-reset-check-promote cycle.
 
+2026-09-06 (cron cycle, continuous-build -- wired estimate/staff routes,
+no SQL migration)
+
+- Checked git log/fetch/status first per standing practice: clean, no
+  new commits since migration 010's staging application, no uncommitted
+  drift. Re-read WORKLOG.md/LOG.md/README.md in full before touching
+  anything.
+- Re-verified production's real state directly (scripts/check_state.sql
+  via DATABASE_URL): matches migrations 001-005, 007, 008, 009 exactly.
+  Found customer_count=1 on the FIRST check -- a real anomaly against
+  every prior session's documented 0-rows-everywhere baseline. Diagnosed
+  directly (queried collision.customer/vehicle by hand) rather than
+  assuming: 1 customer + 1 vehicle row, created 2026-09-04 19:40:53 UTC,
+  presumably a leftover from a concurrent/unattended session that ran in
+  the interim (consistent with this repo's already-documented shared-
+  working-directory/concurrent-session hazard). Re-ran check_state.sql a
+  second time before doing anything else: customer_count now 0 -- the
+  anomaly was transient (another session's own test data, not something
+  this session created or needs to clean up), confirmed gone before
+  proceeding. Flagging plainly since "found unexpected production data,
+  then it was gone" is exactly the kind of thing this repo's discipline
+  says to report rather than silently move past.
+- Re-verified staging's real state (neondb_owner role, branch NAME
+  positional arg per the standing neonctl workaround -- also discovered
+  this session that `neonctl connection-string staging` now additionally
+  requires `--role-name` when a branch has multiple roles, a new prompt
+  compared to earlier sessions' invocations; resolved with `--role-name
+  neondb_owner`, confirmed correct role for admin-script-style access).
+  customer_count=0, matches production's confirmed-clean state.
+- Ran the full test suite fresh before starting: 35/35 (test_models.py
+  15/15 + test_api.py 13/13 + test_pdr_settlement.py 7/7) -- confirmed
+  green, no regressions carried in.
+- Picked the explicit "Next up" item from the prior cycle's own log
+  entry, which doesn't touch migration 006/010's undecided cost-
+  derivation design and doesn't need Jed's input: app/api.py had no HTTP
+  routes for the estimate/staff repository functions built two cycles
+  ago (get_estimates_for_job/get_latest_estimate_for_job,
+  provision_staff_user_for_existing_person/set_staff_user_active/
+  get_staff_capability) -- they existed and were verified at the
+  repository layer but nothing in the API layer called them.
+- **Concurrent-session note, found via git fetch after finishing the
+  routes below (this session's own patch to this file collided with new
+  commits that landed mid-session -- the patch tool auto-merged around
+  it cleanly, flagging here rather than silently accepting a possibly-
+  stale statement):** two more commits landed on origin/main during this
+  session -- cd777bb (migration 010 PROMOTED to production for real,
+  after finding and fixing a real incident: a smoke-test script had
+  committed test person/customer/vehicle rows to production via a
+  leftover unconditional commit(), found and deleted, script rewritten
+  to never commit regardless of environment) and 80b181b (doc-only note
+  about vls's platform.match_or_create_person, not urgent, not acted on).
+  This means migration 010's cost-derivation trigger is NOW LIVE ON
+  PRODUCTION, not staging-only as the immediately-preceding WORKLOG
+  entry (still below, left as the accurate historical record of ITS
+  session) says -- confirmed independently by this session, not just
+  trusting the commit message: pg_trigger shows
+  cost_entry_recalculate_job_costs live on collision.cost_entry, and
+  collision.job.labor_cost/direct_ro_costs both show is_generated=NEVER
+  with the column-level REVOKE design (not Postgres GENERATED columns,
+  per that session's own documented redesign). Nothing in THIS session's
+  own work depended on 010's promotion state either way (pure
+  application-layer HTTP routes over already-existing repository
+  functions), so no rework was needed -- just correcting the record.
+- Built the routes into app/api.py: GET /jobs/{ro_number}/estimates, GET
+  /jobs/{ro_number}/estimates/latest, POST /staff, GET
+  /staff/{google_email}, GET /staff/{google_email}/capability, POST
+  /staff/{google_email}/active. Same no-auth-yet scope decision as every
+  existing route in this file (documented inline, not silently
+  inconsistent). POST /staff deliberately only exposes
+  provision_staff_user_for_existing_person(), NOT
+  provision_new_staff_user() -- the latter needs a privileged, non-
+  collision_app DB connection per app/db.py's already-documented role
+  gap, and this unauthenticated HTTP layer has no way to know which
+  connection role is safe to use for a given caller, so exposing that
+  operation over an open route would be a real scope jump, not a
+  mechanical wiring task -- held back rather than guessed at.
+- Added EstimateOut/StaffUserOut/StaffProvisionRequest/
+  StaffActiveRequest Pydantic schemas and their _estimate_to_out/
+  _staff_to_out converters, following the exact pattern every existing
+  schema/converter pair in the file already uses.
+- Added 13 new tests to test_api.py covering every new route's happy
+  path, 404s (unknown RO, unknown staff email, no estimates yet), and
+  400s (bad role enum, duplicate provisioning). Caught a real bug in my
+  OWN test fixture before it was a false pass: the sample Estimate
+  fixture initially set confirmed_at=None while confirmed_content/
+  confirmed_by were set -- Estimate.__post_init__'s own
+  confirmed_content/confirmed_by/confirmed_at all-or-nothing CHECK
+  mirror correctly rejected this as invalid, catching an inconsistent
+  fixture rather than the fixture accidentally validating something
+  wrong. Fixed by setting a real confirmed_at datetime. Ran test_api.py:
+  26/26 (13 previous + 13 new); full suite 48/48.
+- Verified beyond the mocked test suite by REAL EXECUTION: started the
+  actual `uvicorn app.api:app --port 8010` process (background terminal
+  session), confirmed reachable via `/health` 200, then issued real curl
+  requests through the LIVE PRODUCTION DB connection (read-only): GET
+  /jobs/RO-DOES-NOT-EXIST/estimates -> 404 (real query, 0 job rows so
+  404 is the only correct answer), GET
+  /staff/nobody@completecollisions.com -> 404, GET
+  /staff/nobody@completecollisions.com/capability -> 404, GET /docs ->
+  200. All four real HTTP round-trips, not mocked.
+- Wrote scripts/_smoke_api_estimates_staff.py and ran it against real
+  STAGING under `SET ROLE collision_app` (the real access pattern,
+  matching scripts/_smoke_010_app_layer.py's discipline) -- built using
+  the SAME repository functions the new/existing routes call
+  (create_customer_for_existing_person, get_or_create_vehicle [not
+  create_vehicle -- caught my own wrong function name on the first run,
+  fixed by checking the actual repository.py function list rather than
+  guessing], get_or_create_site, create_repair_order,
+  create_manual_estimate, provision_staff_user_for_existing_person,
+  set_staff_user_active, get_staff_capability): provisioned a real
+  staff_user row, confirmed get_staff_user_by_google_email finds it,
+  confirmed get_staff_capability returns 'full' while active and None
+  after deactivation, inserted 2 real collision.estimate versions on a
+  real job and confirmed get_estimates_for_job returns both in version
+  order and get_latest_estimate_for_job returns the newest, confirmed an
+  unknown RO number returns [] rather than erroring. All 10 checks
+  passed by real output. Rolled back explicitly, then independently
+  re-queried staging afterward (fresh connection, not reusing the same
+  transaction) to confirm 0 collision.staff_user and 0 collision.job
+  rows with the smoke test's identifiers persisted -- confirmed clean.
+- Killed the uvicorn process afterward -- first `taskkill` attempt
+  targeted the launcher PID reported by the terminal tool and appeared
+  to succeed, but a follow-up curl still got a real 200 response.
+  Checked `netstat -ano` for the actual listening PID and found it
+  differs from the launcher PID on this host (uvicorn's reload/worker
+  process has its own PID) -- killed the real listener, re-checked with
+  both curl (connection refused) and netstat (no LISTENING entry, only
+  stale TIME_WAIT) before considering it actually stopped. Flagging this
+  discrepancy for future sessions: don't trust a single taskkill's
+  reported success on this host for a spawned server process without an
+  independent netstat/curl check.
+- Updated README.md's Application layer section with a new dated entry
+  describing exactly what changed and how it was verified.
+- Committed app/api.py, test_api.py, scripts/_smoke_api_estimates_staff.py
+  (new), README.md, this WORKLOG entry, and LOG.md's matching entry
+  together. No SQL migration this session -- pure application-layer
+  work, nothing to stage/verify/promote/tag.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  touch migration 006/010's undecided cost-derivation design, did not
+  reset the shared staging branch, did not attempt to promote migration
+  006/010 (explicitly out of scope -- only Jed re-promotes those).
+
+Open items for Jed, unchanged from prior session except migration
+010's promotion (see the concurrent-session note above):
+- Migration 010 cost-derivation is NOW LIVE ON PRODUCTION as of the
+  concurrent cd777bb commit above -- no longer an open promotion
+  decision. Migration 006 (site + cost_entry itself) has been live on
+  production since its own earlier promotion; 010 completes the
+  derivation design on top of it.
+- CCC ONE license data-sharing mechanism (blocks Phase 3) remains open.
+- provision_new_staff_user() (brand-new platform.person + staff_user in
+  one transaction) still has no HTTP route -- correctly deferred, same
+  privileged-connection reasoning as create_person_and_customer(); would
+  need either a session/role architecture or an explicitly-scoped admin-
+  only route before this is safe to add.
+
+Next up (not started this session, flagged rather than silently
+deferred):
+1. No POST route yet for creating a NEW manual estimate via HTTP
+   (create_manual_estimate() exists in the repository layer, exercised
+   by scripts/tests, but app/api.py only exposes readers for estimates
+   this cycle). Natural follow-up once estimate-entry UI is prioritized.
+2. Everything already listed as blocked in prior sessions remains
+   blocked for the same reasons: content_manifest.json/cc_local_data.json
+   real imports (no export access), CCC ONE license answer (Phase 3),
+   migration 006/010 promotion (Jed's explicit call only).
+
 2026-09-06 (migration 010 promoted to production, real cleanup incident
 along the way -- documenting fully)
 - Re-checked git log/fetch/status first (clean, no concurrent activity),

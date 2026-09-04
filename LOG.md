@@ -5,7 +5,77 @@ Purpose: quick-scan index of what changed and why, for Jed's review
 without re-reading full transcripts. Full narrative/verification detail
 lives in WORKLOG.md; this file is the compact pointer into it.
 
-Session: 2026-09-05 (daily cron cycle — Phase 1 HTTP API layer)
+Session: 2026-09-06 (cron cycle, continuous-build — estimate/staff HTTP routes)
+
+FILES CREATED
+-------------
+scripts/_smoke_api_estimates_staff.py
+  Real end-to-end smoke test against staging (SET ROLE collision_app):
+  provisions a staff_user, exercises capability flip on deactivate,
+  creates a real job + 2 estimate versions via create_manual_estimate(),
+  confirms get_estimates_for_job()/get_latest_estimate_for_job() return
+  correct results. 10/10 checks passed by real output; rolled back and
+  independently re-verified 0 rows persisted afterward.
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added 6 new routes wiring the estimate/staff repository functions
+  (built in the prior cron cycle, previously reachable only from
+  scripts/tests) into the HTTP layer: GET /jobs/{ro_number}/estimates,
+  GET /jobs/{ro_number}/estimates/latest, POST /staff, GET
+  /staff/{google_email}, GET /staff/{google_email}/capability, POST
+  /staff/{google_email}/active. Same unauthenticated-by-design scope as
+  every existing route. POST /staff deliberately excludes
+  provision_new_staff_user() (needs a privileged DB connection this
+  layer can't safely supply).
+
+test_api.py
+  13 new tests (happy path + 404s + 400s) for the new routes.
+  26/26 in this file, 48/48 full suite.
+
+README.md
+  New dated entry in the Application layer section describing the new
+  routes and their real-execution verification.
+
+WORKLOG.md
+  Added this session's full narrative, including a concurrent-session
+  correction: migration 010 (cost-derivation trigger) was PROMOTED TO
+  PRODUCTION by a separate commit (cd777bb) that landed mid-session —
+  confirmed live by direct pg_trigger/information_schema query, prior
+  WORKLOG entry's "not yet promoted" note is now historical only.
+
+VERIFICATION PERFORMED THIS SESSION (real execution, not claims)
+------------------------------------------------------------------
+- git log/fetch/status checked first — clean at start; two concurrent
+  commits (cd777bb, 80b181b) discovered via a later fetch, reviewed and
+  reconciled (see WORKLOG.md).
+- Found and diagnosed a transient production anomaly (customer_count=1
+  on the first check_state.sql run, =0 on a second run moments later) —
+  traced to a concurrent session's own test data, gone by the time this
+  session acted, no cleanup needed but flagged.
+- Full test suite: 48/48 (test_models.py 15/15, test_api.py 26/26,
+  test_pdr_settlement.py 7/7).
+- Real uvicorn process started, hit via curl through the live
+  production DB connection (4 real requests, all correct results),
+  then killed — required checking netstat for the real listener PID
+  since the launcher PID's taskkill didn't stop it.
+- scripts/_smoke_api_estimates_staff.py run against real staging:
+  10/10 checks, rollback independently confirmed.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No POST route for creating new manual estimates via HTTP (readers only
+  this cycle).
+- provision_new_staff_user() still has no HTTP route (privileged-
+  connection gap, unresolved architecture question).
+- Migration 006/010's cost-derivation DESIGN is resolved and now live;
+  no further action needed there. CCC ONE license question and
+  content_manifest.json/cc_local_data.json export access remain blocked
+  on external answers.
+
+
+
 
 FILES CREATED
 -------------

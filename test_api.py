@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 
 from app.api import app, get_cursor
 from app.models import (
-    CostCategory, CostEntry, JobCategory, JobEvent, JobStatus, RepairOrder,
+    CostCategory, CostEntry, Estimate, EstimateSource, JobCategory,
+    JobEvent, JobStatus, RepairOrder, StaffRole, StaffUser,
 )
 
 FAILED = []
@@ -185,6 +186,138 @@ def test_job_not_found_on_costs_endpoint():
     check("test_job_not_found_on_costs_endpoint", r.status_code == 404)
 
 
+# ---------------------------------------------------------------------------
+# Estimates routes (2026-09-06 backlog item #2)
+# ---------------------------------------------------------------------------
+
+def _sample_estimate(**overrides) -> Estimate:
+    from datetime import datetime
+    defaults = dict(
+        id=1, job_id=1, version=1, source=EstimateSource.MANUAL,
+        draft_content={"total": "5000.00"}, confirmed_content={"total": "5000.00"},
+        confirmed_by="jed", confirmed_at=datetime(2026, 9, 6, 12, 0, 0),
+    )
+    defaults.update(overrides)
+    return Estimate(**defaults)
+
+
+def test_get_job_estimates():
+    estimates = [_sample_estimate(id=1, version=1), _sample_estimate(id=2, version=2)]
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.get_estimates_for_job", return_value=estimates):
+        r = client.get("/jobs/RO-10001/estimates")
+    check("test_get_job_estimates_status", r.status_code == 200, r.text)
+    check("test_get_job_estimates_count", len(r.json()) == 2)
+
+
+def test_get_job_estimates_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.get("/jobs/RO-NOPE/estimates")
+    check("test_get_job_estimates_job_not_found", r.status_code == 404)
+
+
+def test_get_job_latest_estimate_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.get_latest_estimate_for_job", return_value=_sample_estimate(version=3)):
+        r = client.get("/jobs/RO-10001/estimates/latest")
+    check("test_get_job_latest_estimate_found_status", r.status_code == 200, r.text)
+    check("test_get_job_latest_estimate_found_version", r.json()["version"] == 3)
+
+
+def test_get_job_latest_estimate_none_yet():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.get_latest_estimate_for_job", return_value=None):
+        r = client.get("/jobs/RO-10001/estimates/latest")
+    check("test_get_job_latest_estimate_none_yet", r.status_code == 404, r.text)
+
+
+# ---------------------------------------------------------------------------
+# Staff routes (2026-09-06 backlog item #1)
+# ---------------------------------------------------------------------------
+
+def _sample_staff(**overrides) -> StaffUser:
+    defaults = dict(
+        id=1, person_id=1, role=StaffRole.MANAGER,
+        google_email="jane.doe@completecollisions.com", active=True,
+    )
+    defaults.update(overrides)
+    return StaffUser(**defaults)
+
+
+def test_provision_staff_success():
+    with patch("app.api.repo.provision_staff_user_for_existing_person", return_value=_sample_staff()):
+        r = client.post(
+            "/staff",
+            json={"person_id": 1, "role": "manager", "google_email": "jane.doe@completecollisions.com", "actor": "jed"},
+        )
+    check("test_provision_staff_success_status", r.status_code == 200, r.text)
+    check("test_provision_staff_success_email", r.json()["google_email"] == "jane.doe@completecollisions.com")
+
+
+def test_provision_staff_bad_role_returns_400():
+    r = client.post(
+        "/staff",
+        json={"person_id": 1, "role": "not_a_role", "google_email": "jane.doe@completecollisions.com", "actor": "jed"},
+    )
+    check("test_provision_staff_bad_role_returns_400", r.status_code == 400, r.text)
+
+
+def test_provision_staff_duplicate_returns_400():
+    with patch("app.api.repo.provision_staff_user_for_existing_person",
+               side_effect=ValueError("staff_user with google_email='jane.doe@completecollisions.com' already exists")):
+        r = client.post(
+            "/staff",
+            json={"person_id": 1, "role": "manager", "google_email": "jane.doe@completecollisions.com", "actor": "jed"},
+        )
+    check("test_provision_staff_duplicate_returns_400", r.status_code == 400, r.text)
+
+
+def test_get_staff_found():
+    with patch("app.api.repo.get_staff_user_by_google_email", return_value=_sample_staff()):
+        r = client.get("/staff/jane.doe@completecollisions.com")
+    check("test_get_staff_found_status", r.status_code == 200, r.text)
+
+
+def test_get_staff_not_found():
+    with patch("app.api.repo.get_staff_user_by_google_email", return_value=None):
+        r = client.get("/staff/nobody@completecollisions.com")
+    check("test_get_staff_not_found", r.status_code == 404)
+
+
+def test_get_staff_capability_active():
+    with patch("app.api.repo.get_staff_user_by_google_email", return_value=_sample_staff()), \
+         patch("app.api.repo.get_staff_capability", return_value="full"):
+        r = client.get("/staff/jane.doe@completecollisions.com/capability")
+    check("test_get_staff_capability_active_status", r.status_code == 200, r.text)
+    check("test_get_staff_capability_active_value", r.json()["capability_level"] == "full")
+
+
+def test_get_staff_capability_unknown_email_404():
+    with patch("app.api.repo.get_staff_user_by_google_email", return_value=None):
+        r = client.get("/staff/nobody@completecollisions.com/capability")
+    check("test_get_staff_capability_unknown_email_404", r.status_code == 404)
+
+
+def test_set_staff_active_deactivate():
+    deactivated = _sample_staff(active=False)
+    with patch("app.api.repo.set_staff_user_active", return_value=deactivated):
+        r = client.post(
+            "/staff/jane.doe@completecollisions.com/active",
+            json={"active": False, "actor": "jed"},
+        )
+    check("test_set_staff_active_deactivate_status", r.status_code == 200, r.text)
+    check("test_set_staff_active_deactivate_value", r.json()["active"] is False)
+
+
+def test_set_staff_active_unknown_returns_404():
+    with patch("app.api.repo.set_staff_user_active", side_effect=ValueError("no staff_user with google_email='nobody@completecollisions.com'")):
+        r = client.post(
+            "/staff/nobody@completecollisions.com/active",
+            json={"active": True, "actor": "jed"},
+        )
+    check("test_set_staff_active_unknown_returns_404", r.status_code == 404, r.text)
+
+
 if __name__ == "__main__":
     tests = [
         test_health, test_get_job_found, test_get_job_not_found, test_get_job_events,
@@ -193,6 +326,13 @@ if __name__ == "__main__":
         test_add_job_cost, test_add_job_cost_bad_category_returns_400,
         test_add_job_cost_negative_amount_returns_400, test_recalculate_job_costs,
         test_job_not_found_on_costs_endpoint,
+        test_get_job_estimates, test_get_job_estimates_job_not_found,
+        test_get_job_latest_estimate_found, test_get_job_latest_estimate_none_yet,
+        test_provision_staff_success, test_provision_staff_bad_role_returns_400,
+        test_provision_staff_duplicate_returns_400,
+        test_get_staff_found, test_get_staff_not_found,
+        test_get_staff_capability_active, test_get_staff_capability_unknown_email_404,
+        test_set_staff_active_deactivate, test_set_staff_active_unknown_returns_404,
     ]
     for t in tests:
         t()
