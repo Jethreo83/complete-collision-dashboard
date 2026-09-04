@@ -146,6 +146,36 @@ discipline as VLS and Elektrica: schema and core business logic first.
   **staging** — needs Jed's explicit review/go-ahead to re-promote. NOT
   tagged `collision-migration-006` — tagging is reserved for migrations
   Jed has actually signed off on landing in production.
+- **`collision.staff_role_capability` + `collision.staff_user_capability()`**
+  (`migrations/007_collision_staff_permission.sql`) — REAL permission
+  enforcement, resolving ADR-001 §6 open item #1. Jed's decision
+  (2026-09-04, relayed by hermes, logged in vls-dashboard's
+  `OVERNIGHT_DECISIONS.md`): "treat [receptionist] like an admin role -
+  full access, not restricted." All three roles (owner/manager/
+  receptionist) resolve to `capability_level = 'full'`, stored as data in
+  `collision.staff_role_capability` (not hardcoded app logic) so a future
+  change is an `UPDATE`, not a migration. `collision.staff_user_capability
+  (google_email)` is the real, callable gate a future backend calls
+  before any action — returns the capability level for an active staff
+  member, or `NULL` for anyone not currently active (wrong email,
+  deactivated, or never provisioned). Deactivation genuinely blocks
+  capability, verified by actually flipping `active` off and back on in
+  `scripts/verify_007.sql`'s test, not just asserted. No RLS scoped to
+  an authenticated staff identity yet — no backend/session-auth mechanism
+  exists to carry that identity, and inventing one now would be guessing
+  at unbuilt architecture, not enforcing a real decision (see migration
+  file header). `app/models.py`'s `StaffRole` docstring updated to point
+  at this as the single source of truth rather than let Python re-derive
+  permission logic that could drift from it. Verified with 5 checks.
+  Note on numbering: this was built and promoted concurrently with (and
+  independently of) migration 006 above in a separate, unattended session
+  — discovered the file-number collision afterward and renumbered this
+  one to 007 to avoid clobbering 006's file; the actual database change
+  had already landed correctly in production under the original filename
+  before the collision was found, so no re-promotion was needed, only the
+  git-level rename and this doc update. Tagged `collision-migration-007`
+  (not `-006`, to keep tag numbers aligned with file numbers; migration
+  006 remains untagged pending Jed's review per the incident above).
 
 ### Business logic — written and tested, no DB dependency
 

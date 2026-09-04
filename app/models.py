@@ -80,10 +80,16 @@ class EstimateSource(str, Enum):
 
 
 class StaffRole(str, Enum):
-    """Matches collision.staff_role (migrations/004). Permission
-    enforcement is explicitly NOT wired yet — see migrations/004's header
-    and README's 'Not yet built' section. This enum exists so the shape
-    is right; nothing in this codebase branches behavior on role today."""
+    """Matches collision.staff_role (migrations/004). Jed's decision
+    (2026-09-04, relayed by hermes): treat receptionist as full/admin
+    access, not restricted. Real enforcement now exists at the DB level
+    via collision.staff_role_capability + collision.staff_user_capability()
+    (migrations/007) -- all three roles currently resolve to 'full'. This
+    Python enum still doesn't branch behavior by itself; any app-layer
+    permission check should call the DB function (or its result) rather
+    than re-deriving logic here, so the single source of truth for "what
+    can this role do" stays the data in staff_role_capability, not a
+    second copy in Python that could drift from it."""
     OWNER = "owner"
     MANAGER = "manager"
     RECEPTIONIST = "receptionist"

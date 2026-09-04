@@ -548,3 +548,70 @@ All open items for Jed, consolidated:
    whether job's flat cost columns should eventually become fully
    derived from cost_entry) and go-ahead to promote for real.
 
+2026-09-04 (concurrent-session collision discovered and resolved)
+- hermes relayed Jed's decision on receptionist permissions ("treat like
+  an admin role — full access, not restricted") and cleared building real
+  enforcement now. Built migrations/006_collision_staff_permission.sql:
+  collision.staff_role_capability (role -> capability_level, currently
+  'full' for all three roles per Jed's decision, stored as data so a
+  future change is an UPDATE not a migration) and
+  collision.staff_user_capability(google_email) (the real callable gate
+  — returns capability for an active staff member, NULL otherwise).
+  Verified with 5 checks including the meaningful one: flipping a staff
+  member's `active` flag off and back on genuinely changes what the
+  function returns, proving this is real enforcement, not a static
+  lookup. Applied to production, confirmed live by direct query
+  (collision.staff_role_capability holds exactly owner/manager/
+  receptionist -> 'full').
+- **Before tagging, discovered a real problem:** a separate, unattended
+  session of this same bot had run in the interim (commits 167061b and
+  d4db2d1 — visible via `git log`, not something I was told about
+  directly) and had ALSO created a file at
+  migrations/006_collision_site_and_cost.sql (collision.site +
+  collision.cost_entry, plus a full app/ layer: models.py, db.py,
+  repository.py, csv_import.py). That session hit its own real incident
+  (a neonctl CLI flag silently degrading `--branch-id` to the default/
+  production branch instead of erroring), applied its migration 006 to
+  production by accident one step ahead of sign-off, caught it via
+  direct query, and rolled it back itself — verified zero data loss,
+  fully documented in its own WORKLOG/LOG/README entries. That migration
+  006 is UNTAGGED and staging-only, correctly awaiting Jed's review
+  per that session's own log.
+- My migration had ALSO been filed as "006" (a different, unrelated
+  migration — permission enforcement, not site/cost) and had ALREADY
+  been correctly promoted to production under that filename before I
+  discovered the collision — confirmed by direct query that
+  collision.staff_role_capability was live and correct on production
+  exactly as expected, so no database work needed redoing.
+- Resolved by renumbering MY files only: migrations/
+  006_collision_staff_permission.sql → 007_collision_staff_permission.sql,
+  scripts/verify_006.sql → verify_007.sql (git mv), updated the internal
+  file-name reference inside the migration's own header comment, updated
+  README's migration-007 entry (separate from the existing migration-006
+  entry, not overwriting it), updated app/models.py's StaffRole docstring
+  (which had been written by the concurrent session and still said
+  "Permission enforcement is explicitly NOT wired yet" — now points at
+  collision.staff_role_capability as the real source of truth). Tagged
+  `collision-migration-007` (not `-006`, keeping tag numbers aligned with
+  file numbers — migration 006 stays untagged per its own session's
+  incident report, pending Jed's review of that separate design).
+- Lesson for next time: check `git log`/`git status` for unexpected
+  commits FIRST, before writing any new migration file, not just before
+  promoting — I found this by luck (a stray edit warning on README.md)
+  rather than by a deliberate check. Should be routine now given how much
+  concurrent/unattended activity has touched this repo in one session.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  disturb the other session's untagged migration 006 or its
+  not-yet-reviewed app layer.
+
+Updated open items for Jed:
+- Item 2 (receptionist permissions) from the list above is now RESOLVED
+  — collision-migration-007 implements it, live in production.
+- New: review migration 006 (collision.site + collision.cost_entry,
+  written by a separate concurrent session) on staging — see README.md's
+  migration-006 entry for the specific design questions (cost taxonomy
+  correctness, whether to derive job's flat cost columns from cost_entry)
+  before promoting.
+
+
