@@ -9,19 +9,13 @@
 -- identical to vls.client (VLS migration 004). No placeholder fields in
 -- this file.
 --
--- *** NOT YET APPLIED TO ANY NEON BRANCH. ***
--- Holding on `neon ... psql -f` for this file until Jed confirms, to me
--- directly, that sharing the Neon project named "Jocasta Dashboard"
--- (aged-art-92489373 — confirmed via `neonctl projects list`) is intended
--- knowing that name/adjacency, not just "share it like Elektrica does."
--- My standing instruction treats the VLS/Jocasta boundary as absolute and
--- requires me to ask Jed directly rather than assume access, even though
--- Elektrica's bot already got a similar question resolved ("the VLS
--- boundary is about case DATA, not schema/SQL with zero client data" —
--- see elektrica-dashboard/docs/BUILD_LOG.md 2026-09-03 later entry). That
--- precedent is encouraging but was given to a different bot for a
--- different schema; getting my own explicit go-ahead before I write
--- anything into that specific project. See WORKLOG/BUILD_LOG for status.
+-- APPLIED to production 2026-09-04, tagged `collision-migration-001`.
+-- Sharing the Neon project named "Jocasta Dashboard" (aged-art-92489373,
+-- also VLS's project) required Jed's own direct confirmation given this
+-- bot's standing "no relationship to VLS/Jocasta" boundary — obtained via
+-- a clickable prompt naming VLS explicitly ("Same Neon project as
+-- VLS/Elektrica, new `collision` schema"). See WORKLOG.md for the full
+-- resolution narrative and verification output.
 
 CREATE SCHEMA IF NOT EXISTS collision;
 

@@ -4,30 +4,33 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status
+## Status (as of migration 001, tag `collision-migration-001`)
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
 
-### Schema — NOT YET APPLIED to any Neon branch
+### Schema — production (Neon project `aged-art-92489373`)
 
-- `migrations/001_collision_customer.sql` — `collision.customer` (party
-  table keyed to `platform.person`, identical pattern to `vls.client` and
-  `elektrica.renter`) + RLS policy on `platform.person` for a
-  `collision_app` role. Companion `scripts/verify_001.sql` written but not
-  run.
-- **Held, not applied:** the Neon project both VLS and Elektrica share
-  (`aged-art-92489373`) is named "Jocasta Dashboard" in the Neon console.
-  This bot's standing instructions treat the VLS/Jocasta boundary as
-  absolute and require asking Jed directly before touching anything
-  VLS-adjacent — including sharing a Postgres project/credential surface
-  with `vls.client`. Elektrica's bot got a similar question resolved
-  ("the VLS boundary is about case DATA, not schema/SQL with zero client
-  data" — see `elektrica-dashboard/docs/BUILD_LOG.md`), which is
-  encouraging precedent but was given to a different bot for a different
-  schema. Waiting on Jed's direct confirmation (not just a relayed
-  "proceed") before running `neon ... psql -f migrations/001_....sql`
-  against that project. See `WORKLOG.md` for the live status of that ask.
+- **`collision.customer`** (`migrations/001_collision_customer.sql`) —
+  Complete Collision's own party table, keyed to `platform.person` (shared
+  with VLS/Elektrica). Identical pattern to `vls.client` and
+  `elektrica.renter`.
+- **RLS on `platform.person`** — `collision_app` role sees a person row
+  only if a matching `collision.customer` row exists, same mechanism as
+  `vls_app`/`elektrica_app` (VLS migration 004). Verified live: person
+  visibility both directions, `collision_app` blocked from direct
+  `platform.person` INSERT, `platform_identity_service` sees everyone,
+  `collision_app` can read/write its own schema, one-row-per-person
+  constraint — all 6 checks passed by direct query, see
+  `scripts/verify_001.sql` and `WORKLOG.md` for the real output.
+- Sharing this Neon project with VLS required Jed's direct, explicit
+  confirmation given this bot's standing "no relationship to VLS/Jocasta"
+  boundary — obtained 2026-09-04 via a clickable prompt naming VLS
+  explicitly ("Same Neon project as VLS/Elektrica, new `collision`
+  schema"). See `WORKLOG.md` for the full resolution narrative.
+- Applied to staging first, verified, staging reset to a clean mirror of
+  production, then promoted to production and reconfirmed by direct query
+  post-promotion. Tagged `collision-migration-001` on promotion.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -59,8 +62,7 @@ promoted, tagged on promotion.
 
 ## Open questions blocking further schema work
 
-See `docs/ADR-001-complete-collision.md` §6, plus the Neon-project-sharing
-question above (not yet in the ADR, tracked here and in `WORKLOG.md`).
+See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 

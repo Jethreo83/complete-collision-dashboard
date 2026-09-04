@@ -3,10 +3,9 @@
 -- actually switching role and querying, not by reading the policy
 -- definition.
 --
--- *** NOT YET RUN. *** Companion to migrations/001_collision_customer.sql,
--- which is not yet applied to any Neon branch — see that file's header and
--- WORKLOG.md for why (pending Jed's direct confirmation on sharing the
--- "Jocasta Dashboard" Neon project).
+-- RUN against staging 2026-09-04 — all 6 checks passed by direct query
+-- output (see WORKLOG.md for the full transcript). Companion to
+-- migrations/001_collision_customer.sql, now applied to production.
 
 DO $$
 DECLARE
