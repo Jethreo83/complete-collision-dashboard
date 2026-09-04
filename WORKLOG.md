@@ -995,3 +995,174 @@ only, no schema work)
 
 
 
+2026-09-06 (cron cycle, later — continuous-build task, no waiting for
+Jed check-in)
+
+- Checked git log/fetch/status first, per standing practice — clean, no
+  new commits since migration 010's draft, no uncommitted drift. Re-read
+  WORKLOG.md/LOG.md/README.md in full before touching anything.
+- Confirmed neonctl's branch-NAME-not-branch-ID connection-string
+  workaround still resolves correctly: staging -> ep-bold-leaf-a5dr4amg,
+  production -> ep-damp-bird-a5vtcqmv (matches DATABASE_URL's host) —
+  two different hosts confirmed again before trusting either.
+- Checked staging's real state via scripts/check_state.sql: customer,
+  content_item, estimate, job, job_event, staff_role_capability,
+  staff_user, vehicle present; site/cost_entry (migration 006) NOT
+  present — migration 006 has drifted off staging again since the last
+  session that verified it there (another build track's reset, the same
+  recurring shared-staging condition documented repeatedly in this log).
+  Not a concern for this session's work (didn't touch 006/010's tables).
+  Checked production's real state: matches migrations 001-005, 007, 008,
+  009 exactly (customer/content_item/cost_entry/estimate/job/job_event/
+  site/staff_role_capability/staff_user/vehicle, plus cost_entry+site
+  from the already-tagged migration-006 promotion, plus the
+  trg_job_status_forward_only trigger and staff_user_google_email_domain
+  CHECK confirmed present by direct pg_trigger/pg_constraint query) — no
+  drift on production, matches the last confirmed state exactly.
+- Ran the full existing test suite fresh before starting: test_models.py
+  12/12, test_pdr_settlement.py 7/7, test_api.py 13/13 — all green, no
+  regressions from anything since the last session.
+- Picked two genuinely unblocked items from the carried-over open list,
+  neither touching migration 006/010's undecided cost-derivation design
+  and neither needing Jed's input:
+  1. Item 3 from 2026-09-06's "Jed's three answers" entry, explicitly
+     logged as backlog and not yet built: "staff provisioning should
+     also create a platform.person row." collision.staff_user.person_id
+     was already NOT NULL REFERENCES platform.person(id) at the schema
+     level (migration 004) — what was missing was the actual
+     provisioning FUNCTION. Added to app/repository.py:
+     provision_staff_user_for_existing_person() (runs fine under
+     collision_app — only touches collision.staff_user, no
+     platform.person write involved), provision_new_staff_user() (the
+     privileged-connection convenience wrapper creating both rows in one
+     transaction, explicitly documented as requiring a non-collision_app
+     role, same pattern and limitation as the existing
+     create_person_and_customer()), set_staff_user_active() (exposes the
+     activate/deactivate lever verify_007.sql's test already exercised
+     inline, as a real reusable function), and get_staff_capability()
+     (thin wrapper calling collision.staff_user_capability(), migration
+     007's real gate).
+  2. A second real gap found while reading the repository module
+     end-to-end before adding to it: collision.estimate had a writer
+     (create_manual_estimate()) since migration 003 but NO reader
+     anywhere in this codebase — app/api.py's job responses never
+     surfaced estimate history, and nothing let a caller list a job's
+     estimate versions. Added get_estimates_for_job() (ordered by
+     version, matching the table's own idx_estimate_job index order) and
+     get_latest_estimate_for_job(). Not yet wired into app/api.py as an
+     HTTP route this session — flagged below as the natural next step,
+     kept this session scoped to the repository layer plus verification.
+- Added a StaffUser dataclass to app/models.py, mirroring
+  collision.staff_user (migrations 004 + 009) the same 1:1-by-field-name
+  way every other dataclass in this file does. Its __post_init__ mirrors
+  migration 009's CHECK constraint (google_email must end in
+  '@completecollisions.com') in Python, rejecting bad data before it
+  ever reaches a query — same discipline as Estimate's confirmation-
+  state checks. Added a module-level GOOGLE_WORKSPACE_DOMAIN constant
+  (not a magic string) so the Python and SQL sides of this specific
+  domain string stay obviously coupled, matching the
+  JOB_STATUS_SEQUENCE-vs-migration-008-array-literal precedent already
+  documented via test_job_status_sequence_matches_migration_008_array_literal.
+- Deliberately did NOT add any StaffUser-related route to app/api.py
+  this session (see "Next up" below) — kept the change to the layer
+  that's genuinely ready (models + repository), consistent with this
+  session's own "don't wire unbuilt architecture" discipline already
+  applied elsewhere in this repo (app/api.py's own no-auth-route-guard
+  decision, migration 007's no-RLS decision).
+- Added 3 new unit tests to test_models.py (no DB dependency):
+  test_staff_user_rejects_wrong_domain, test_staff_user_rejects_
+  lookalike_domain (explicitly checked the substring-vs-suffix
+  distinction in Python before writing the assertion — confirmed
+  "jed@notcompletecollisions.com".endswith("@completecollisions.com")
+  really does evaluate False, so this isn't a test that would pass by
+  accident), test_staff_user_accepts_correct_domain_and_normalizes_case.
+  Ran test_models.py fresh: 15/15 passed (12 previous + 3 new).
+- Verified the new repository functions by REAL EXECUTION against
+  staging, not just unit tests: seeded two test platform.person rows via
+  the existing scripts/_seed_test_people.py (jane.doe@example.com,
+  john.smith@example.com — confirmed CREATED, not silently skipped, so
+  this was a genuine fresh insert this session), then wrote and ran
+  scripts/_smoke_staff_provisioning.py against staging:
+    - provision_staff_user_for_existing_person() created a real
+      collision.staff_user row (id=1, role=manager, email=
+      jane.doe@completecollisions.com, active=True) — confirmed by the
+      function's own return value reflecting the actual INSERTed row.
+    - A second provisioning attempt for the same email correctly raised
+      ValueError ("already exists") rather than silently creating a
+      duplicate or erroring on the DB's own UNIQUE constraint uncaught.
+    - get_staff_capability() returned 'full' while active — matches
+      collision.staff_role_capability's data (migration 007).
+    - set_staff_user_active(..., False, ...) then get_staff_capability()
+      returned None (SQL NULL) — deactivation genuinely blocks
+      capability, the same real behavior verify_007.sql already proved,
+      now reachable through a reusable function instead of only inline
+      test SQL.
+    - Reactivating restored capability_level='full'.
+    - Constructing a real StaffUser object with a gmail.com email raised
+      ValueError from Python's own domain check, independent of the DB.
+    - get_estimates_for_job() ran against staging's current job table
+      (0 rows right now — see the check_state.sql note above about
+      migration 006/010's tables, unrelated to this) and correctly
+      reported 0 estimate versions rather than erroring.
+  The whole smoke script ran inside one transaction, explicitly
+  cur.connection.rollback()'d at the end rather than committed, then
+  independently re-queried staging directly afterward
+  (SELECT count(*) FROM collision.staff_user) and confirmed count=0 —
+  proof the rollback actually took effect, not just trusting the
+  script's own claim. The two seeded test people
+  (jane.doe@example.com/john.smith@example.com) were left in place
+  rather than reset the whole shared staging branch for two harmless
+  rows, per the "don't disrupt other build tracks' staging state
+  unnecessarily" lesson already documented in this log.
+- Ran the full test suite again after all changes: test_models.py
+  15/15, test_api.py 13/13, test_pdr_settlement.py 7/7 — all green.
+- Updated README.md's Application layer section with a new dated entry
+  describing exactly what changed and how it was verified, so the doc
+  stays accurate without anyone needing to re-read this WORKLOG entry.
+- Committed app/models.py, app/repository.py, test_models.py,
+  scripts/_smoke_staff_provisioning.py (new), README.md, this WORKLOG
+  entry, and LOG.md's matching entry, together in one commit. No SQL
+  migration in this session — pure application-layer work, nothing to
+  stage/verify/promote/tag.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  touch migration 006/010's undecided cost-derivation design, did not
+  reset the shared staging branch, did not attempt to promote migration
+  006 (explicitly out of scope for this session per Jed's standing
+  instruction that only he re-promotes it).
+
+Open items for Jed, updated:
+- Item 3 ("staff provisioning should also create a platform.person row")
+  from the 2026-09-06 "Jed's three answers" entry is now RESOLVED at the
+  repository-function level (see above). Still open: no HTTP route in
+  app/api.py exposes staff provisioning yet (see "Next up" below) — the
+  capability exists in the codebase but nothing calls it from outside a
+  script yet.
+- Carried over, unchanged: migration 006/010 cost-derivation promotion
+  question (items 7 and the gross_revenue/rent_utility_share follow-up
+  from migration 010's header) remains Jed's call, not touched this
+  session. Item 1 (CCC ONE license data-sharing mechanism, blocks Phase
+  3) remains open. Google Workspace domain relay (previously flagged as
+  "could not actually deliver, message_agent unavailable") — moot now,
+  since migration 009 already has the confirmed domain live in
+  production and this session's StaffUser model matches it; no further
+  action needed on that specific relay question.
+
+Next up (not started this session, flagged rather than silently
+deferred):
+1. app/api.py has no staff-provisioning or staff-listing HTTP routes —
+   the repository functions exist and are verified, but nothing in the
+   API layer calls them yet. Natural next step once picked up: POST
+   /staff (provision_staff_user_for_existing_person, collision_app-safe)
+   and GET /staff/{google_email}/capability, following the same
+   unauthenticated-by-design pattern already documented in app/api.py's
+   header (no session mechanism exists yet to gate who can call these).
+2. get_estimates_for_job()/get_latest_estimate_for_job() exist in the
+   repository layer but aren't yet surfaced via GET
+   /jobs/{ro_number}/estimates — straightforward follow-up whenever
+   estimate-history display becomes a priority.
+3. Everything already listed as blocked in prior sessions remains
+   blocked for the same reasons: content_manifest.json/cc_local_data.json
+   real imports (no export access), CCC ONE license answer (Phase 3),
+   migration 006/010 promotion (Jed's explicit call only).
+

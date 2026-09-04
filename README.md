@@ -311,6 +311,39 @@ and requires clarification before any live integration is built.
   yet even though DB-level capability enforcement already exists), no CSV
   upload UI (CLI only for now).
 
+- **New this cron cycle (2026-09-06, later):** `app/models.py` gained a
+  `StaffUser` dataclass (mirrors `collision.staff_user`, migrations 004
+  + 009) with `__post_init__` domain validation matching migration 009's
+  CHECK constraint — rejects a wrong/lookalike Google Workspace domain in
+  Python before it ever reaches a query, same discipline as `Estimate`.
+  `app/repository.py` gained the staff-provisioning functions closing the
+  gap flagged 2026-09-06 as backlog ("staff provisioning should also
+  create a `platform.person` row" — the schema-level requirement already
+  existed via migration 004's FK, but no function exercised it):
+  `provision_staff_user_for_existing_person()` (safe under `collision_app`
+  — only touches `collision.staff_user`), `provision_new_staff_user()`
+  (privileged-connection convenience wrapper creating both the
+  `platform.person` and `staff_user` rows in one transaction, same
+  pattern/limitation as `create_person_and_customer()`),
+  `set_staff_user_active()`, `get_staff_capability()` (calls
+  `collision.staff_user_capability()` from migration 007), and
+  `get_estimates_for_job()` / `get_latest_estimate_for_job()` — closes a
+  separate real gap: `collision.estimate` had a writer
+  (`create_manual_estimate()`) but no reader anywhere in the repo.
+  Verified by **real execution** against staging
+  (`scripts/_smoke_staff_provisioning.py`): provisioned a real
+  `staff_user` row, confirmed duplicate-provisioning correctly rejected,
+  confirmed `get_staff_capability()` returns `'full'` while active and
+  `None` after deactivation and back to `'full'` on reactivation (the
+  same lever `verify_007.sql` exercises, now available as a real
+  function), confirmed the Python-side domain check rejects a `gmail.com`
+  address — then rolled back and confirmed by direct post-rollback query
+  that zero `staff_user` rows persisted on staging. 3 new unit tests in
+  `test_models.py` (wrong domain rejected, lookalike domain rejected,
+  correct domain accepted + email lowercased) — `test_models.py` now
+  15/15, `test_api.py` still 13/13, `test_pdr_settlement.py` still 7/7,
+  no regressions.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

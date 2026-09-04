@@ -227,3 +227,63 @@ NOT DONE / EXPLICITLY DEFERRED
   Jed's answer, unchanged from prior sessions).
 - content_manifest.json / cc_local_data.json real data imports — still
   blocked on export access to "the mini" (unchanged from prior sessions).
+
+
+Session: 2026-09-06 (cron cycle, later — continuous-build task)
+
+FILES MODIFIED
+--------------
+app/models.py
+  Added StaffUser dataclass (mirrors collision.staff_user, migrations
+  004+009) with domain validation matching migration 009's CHECK
+  constraint; added GOOGLE_WORKSPACE_DOMAIN constant.
+
+app/repository.py
+  Added: provision_staff_user_for_existing_person(),
+  provision_new_staff_user() (privileged-connection wrapper),
+  set_staff_user_active(), get_staff_capability(),
+  get_estimates_for_job(), get_latest_estimate_for_job(). Closes the
+  "staff provisioning should create a platform.person row" backlog item
+  and a separately-discovered gap (collision.estimate had no reader).
+
+test_models.py
+  3 new tests for StaffUser domain validation (wrong domain rejected,
+  lookalike domain rejected, correct domain accepted + normalized).
+  15/15 passing.
+
+README.md
+  New dated entry under Application layer describing the above.
+
+FILES CREATED
+-------------
+scripts/_smoke_staff_provisioning.py
+  Real-execution verification against staging (not just unit tests):
+  provisioned a real staff_user row, confirmed duplicate-provisioning
+  rejected, confirmed capability toggling via deactivate/reactivate,
+  confirmed Python-side domain rejection — then rolled back, confirmed
+  by direct post-rollback query that 0 rows persisted.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git log/fetch/status checked first — clean, no concurrent drift.
+- Re-verified staging (migration 006 tables absent — another track's
+  reset landed since last verified, unrelated to this session's work)
+  and production (matches migrations 001-009 exactly, trigger + CHECK
+  constraint confirmed by direct pg_trigger/pg_constraint query) before
+  touching anything.
+- Full test suite green before AND after changes: test_models.py
+  (12/12 -> 15/15), test_api.py (13/13), test_pdr_settlement.py (7/7).
+- scripts/_smoke_staff_provisioning.py run against real staging data,
+  rolled back explicitly, zero staff_user rows confirmed by independent
+  direct query afterward.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No new HTTP routes in app/api.py for staff provisioning or estimate
+  history — repository functions exist and are verified, routes are the
+  natural next step, not built this session.
+- Migration 006/010 (cost-derivation, site+cost_entry promotion) —
+  untouched, remains Jed's explicit call, not decided or acted on solo.
+- Same CCC ONE license / content_manifest.json export blockers as every
+  prior session, unchanged.
+

@@ -12,6 +12,8 @@ from app.models import (
     JobStatus,
     JOB_STATUS_SEQUENCE,
     RepairOrder,
+    StaffRole,
+    StaffUser,
     validate_transition,
 )
 
@@ -136,6 +138,31 @@ def test_job_status_sequence_matches_migration_008_array_literal():
         JobStatus.CLOSED_OUT, JobStatus.MARKETING,
     ]
     assert JOB_STATUS_SEQUENCE == expected
+
+
+def test_staff_user_rejects_wrong_domain():
+    try:
+        StaffUser(person_id=1, role=StaffRole.OWNER, google_email="jed@gmail.com")
+        assert False, "expected ValueError: wrong Google Workspace domain"
+    except ValueError:
+        pass
+
+
+def test_staff_user_rejects_lookalike_domain():
+    """Same 'reject lookalike, don't just substring-match' discipline as
+    migrations/009_collision_staff_domain_constraint.sql's own verify
+    script (verify_009.sql) is described as testing on the SQL side --
+    mirrored here in Python."""
+    try:
+        StaffUser(person_id=1, role=StaffRole.OWNER, google_email="jed@notcompletecollisions.com")
+        assert False, "expected ValueError: lookalike domain must not pass"
+    except ValueError:
+        pass
+
+
+def test_staff_user_accepts_correct_domain_and_normalizes_case():
+    staff = StaffUser(person_id=1, role=StaffRole.MANAGER, google_email="Jed@CompleteCollisions.com")
+    assert staff.google_email == "jed@completecollisions.com"
 
 
 def _run_all():

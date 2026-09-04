@@ -30,6 +30,8 @@ from app.models import (
     JobStatus,
     RepairOrder,
     Site,
+    StaffUser,
+    StaffRole,
     Vehicle,
     VALID_COST_ENTRY_SOURCES,
     VALID_CUSTOMER_SOURCES,
@@ -425,4 +427,174 @@ def _estimate_from_row(row) -> Estimate:
         source=EstimateSource(row["source"]), draft_content=row["draft_content"],
         confirmed_content=row["confirmed_content"], confirmed_by=row["confirmed_by"],
         confirmed_at=row["confirmed_at"], created_at=row["created_at"], created_by=row["created_by"],
+    )
+
+
+def get_estimates_for_job(cur, ro_number: str) -> list[Estimate]:
+    """All estimate versions for a job, oldest first -- matches
+    collision.estimate's own idx_estimate_job (job_id, version) index
+    order. No reader existed for this table before now; app/api.py's
+    /jobs/{ro_number} response never included estimate history, so this
+    closes a real gap (repository.py had create_manual_estimate() but no
+    corresponding list function)."""
+    cur.execute(
+        """
+        SELECT e.* FROM collision.estimate e
+        JOIN collision.job j ON j.id = e.job_id
+        WHERE j.ro_number = %s
+        ORDER BY e.version
+        """,
+        (ro_number,),
+    )
+    return [_estimate_from_row(r) for r in cur.fetchall()]
+
+
+def get_latest_estimate_for_job(cur, ro_number: str) -> Optional[Estimate]:
+    estimates = get_estimates_for_job(cur, ro_number)
+    return estimates[-1] if estimates else None
+
+
+# ---------------------------------------------------------------------------
+# StaffUser — provisioning
+#
+# Closes the real gap flagged 2026-09-06 (Jed's item 3): "staff
+# provisioning should also create a platform.person row" -- previously
+# no function existed that created both rows together in one
+# transaction. collision.staff_user.person_id is NOT NULL REFERENCES
+# platform.person(id) at the schema level (migrations/004) already, but
+# nothing in app/repository.py exercised the find-or-create-person half
+# of that requirement for staff (only create_person_and_customer() did,
+# for customers).
+#
+# Same privileged-connection caveat as create_person_and_customer():
+# creating a genuinely NEW platform.person row requires a role with
+# INSERT on platform.person, which collision_app does NOT have
+# (migrations/001, by design -- identity-service match-before-create
+# gap, documented in app/db.py). provision_staff_user_for_existing_person()
+# has no such requirement (it only touches collision.staff_user, which
+# collision_app can write) -- that's the function a day-to-day backend
+# should call once a person already exists; the full
+# provision_new_staff_user() convenience wrapper is for an admin script
+# run under a privileged connection, exactly like
+# create_person_and_customer().
+# ---------------------------------------------------------------------------
+
+def get_staff_user_by_google_email(cur, google_email: str) -> Optional[StaffUser]:
+    cur.execute(
+        "SELECT * FROM collision.staff_user WHERE google_email = %s",
+        (google_email.strip().lower(),),
+    )
+    row = cur.fetchone()
+    return _staff_user_from_row(row) if row else None
+
+
+def provision_staff_user_for_existing_person(
+    cur, person_id: int, role: StaffRole, google_email: str, actor: str,
+    provisioned_by_staff_user_id: Optional[int] = None,
+) -> StaffUser:
+    """Link an ALREADY-EXISTING platform.person row as a Complete
+    Collision staff_user. Runs fine under collision_app (no
+    platform.person write involved) -- this is the function a real
+    provisioning UI/API should call once the person row already exists
+    (e.g. found by email, or created moments earlier by an admin
+    script)."""
+    existing = get_staff_user_by_google_email(cur, google_email)
+    if existing:
+        raise ValueError(f"staff_user with google_email={google_email!r} already exists")
+    # Constructing StaffUser first runs its own __post_init__ domain
+    # validation (app/models.py) before this ever reaches the DB --
+    # same "reject bad data in Python before the query" discipline as
+    # Estimate.
+    staff = StaffUser(
+        person_id=person_id, role=role, google_email=google_email,
+        provisioned_by_staff_user_id=provisioned_by_staff_user_id,
+    )
+    cur.execute(
+        """
+        INSERT INTO collision.staff_user (
+            person_id, role, google_email, provisioned_by_staff_user_id,
+            created_by, updated_by
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            staff.person_id, staff.role.value, staff.google_email,
+            staff.provisioned_by_staff_user_id, actor, actor,
+        ),
+    )
+    return _staff_user_from_row(cur.fetchone())
+
+
+def provision_new_staff_user(
+    cur, first_name: str, last_name: str, role: StaffRole, google_email: str, actor: str,
+    provisioned_by_staff_user_id: Optional[int] = None,
+) -> StaffUser:
+    """Creates a BRAND NEW platform.person row AND its collision.staff_user
+    row in one transaction.
+
+    *** REQUIRES A PRIVILEGED CONNECTION *** -- same platform.person
+    INSERT-grant gap as create_person_and_customer() (see that
+    function's docstring and app/db.py's module docstring). Raises
+    psycopg2.errors.InsufficientPrivilege under collision_app, which is
+    correct: a real backend authenticating as collision_app should call
+    provision_staff_user_for_existing_person() against a person row an
+    admin already created, not this convenience wrapper.
+    """
+    email_normalized = google_email.strip().lower()
+    cur.execute(
+        """
+        INSERT INTO platform.person (first_name, last_name, email_normalized, created_by)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id
+        """,
+        (first_name, last_name, email_normalized, actor),
+    )
+    person_id = cur.fetchone()["id"]
+    return provision_staff_user_for_existing_person(
+        cur, person_id, role, google_email, actor,
+        provisioned_by_staff_user_id=provisioned_by_staff_user_id,
+    )
+
+
+def set_staff_user_active(cur, google_email: str, active: bool, actor: str) -> StaffUser:
+    """Flip a staff member's active flag -- the same lever
+    scripts/verify_007.sql's test exercises to prove
+    staff_user_capability() genuinely responds to deactivation, now
+    exposed as a real repository function rather than only inline test
+    SQL."""
+    cur.execute(
+        """
+        UPDATE collision.staff_user
+        SET active = %s, updated_at = now(), updated_by = %s
+        WHERE google_email = %s
+        RETURNING *
+        """,
+        (active, actor, google_email.strip().lower()),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"no staff_user with google_email={google_email!r}")
+    return _staff_user_from_row(row)
+
+
+def get_staff_capability(cur, google_email: str) -> Optional[str]:
+    """Calls collision.staff_user_capability() (migrations/007) -- the
+    real, callable permission gate. Returns the capability level for an
+    active staff member, or None (SQL NULL) for anyone not currently
+    active."""
+    cur.execute(
+        "SELECT collision.staff_user_capability(%s) AS capability_level",
+        (google_email.strip().lower(),),
+    )
+    row = cur.fetchone()
+    return row["capability_level"] if row else None
+
+
+def _staff_user_from_row(row) -> StaffUser:
+    return StaffUser(
+        id=row["id"], person_id=row["person_id"], role=StaffRole(row["role"]),
+        google_email=row["google_email"], active=row["active"],
+        provisioned_by_staff_user_id=row["provisioned_by_staff_user_id"],
+        created_at=row["created_at"], created_by=row["created_by"],
+        updated_at=row["updated_at"], updated_by=row["updated_by"],
     )

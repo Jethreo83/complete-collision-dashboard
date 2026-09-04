@@ -95,6 +95,16 @@ class StaffRole(str, Enum):
     RECEPTIONIST = "receptionist"
 
 
+GOOGLE_WORKSPACE_DOMAIN = "completecollisions.com"
+"""Matches migrations/009_collision_staff_domain_constraint.sql's CHECK
+constraint (google_email LIKE '%@completecollisions.com'), confirmed by
+Jed 2026-09-06. Kept as a named constant here (not a magic string
+scattered through app code) so the Python side and the DB CHECK stay
+obviously in sync -- same coupling-guardrail discipline as
+JOB_STATUS_SEQUENCE / migrations/008's array literal (see
+test_job_status_sequence_matches_migration_008_array_literal)."""
+
+
 class CostCategory(str, Enum):
     """Matches collision.cost_category (migrations/006). This is this
     bot's own reasonable body-shop cost taxonomy, NOT sourced from a
@@ -278,6 +288,40 @@ class Estimate:
                 "confirmed_content/confirmed_by/confirmed_at must be set together "
                 "or not at all (estimate_confirmation_all_or_nothing CHECK)."
             )
+
+
+@dataclass
+class StaffUser:
+    """Mirrors collision.staff_user (migrations/004, /009). person_id
+    points at the shared platform.person table, same cross-business
+    identity pattern as Customer. google_email must end in
+    '@completecollisions.com' (migrations/009's CHECK constraint,
+    mirrored here in Python so bad data is rejected before it ever
+    reaches a query, same discipline as Estimate's confirmation-state
+    checks below). Permission level is NOT modeled here -- see
+    migrations/007_collision_staff_permission.sql's
+    staff_user_capability() for the actual, callable source of truth
+    (all three roles currently resolve to 'full' per Jed's decision)."""
+    person_id: int
+    role: StaffRole
+    google_email: str
+    active: bool = True
+    provisioned_by_staff_user_id: Optional[int] = None
+    id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
+
+    def __post_init__(self):
+        email = (self.google_email or "").strip().lower()
+        if not email.endswith(f"@{GOOGLE_WORKSPACE_DOMAIN}"):
+            raise ValueError(
+                f"google_email={self.google_email!r} must end in "
+                f"'@{GOOGLE_WORKSPACE_DOMAIN}' (migrations/009's CHECK "
+                "constraint mirrors this at the DB level)."
+            )
+        self.google_email = email
 
 
 def validate_transition(current: JobStatus, target: JobStatus) -> None:
