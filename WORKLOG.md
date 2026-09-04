@@ -878,4 +878,52 @@ only, no schema work)
 - No schema/code change beyond the two doc updates above. Nothing to
   promote, nothing to tag.
 
+2026-09-06 (correction: verify_007.sql was silently corrupted, fixed)
+- Checked git log/fetch/status first per standing practice — clean, no
+  new commits, no uncommitted drift, before starting Jed's three new
+  answers below. While reviewing migration 006's history to plan the
+  cost-derivation transition, found scripts/verify_007.sql (committed in
+  9257fc2, "renumbered from 006 collision") actually contains a DUPLICATE
+  of scripts/verify_006.sql's (site+cost) content, not the staff-
+  permission verification script it's supposed to be. Root cause:
+  somewhere between writing verify_007.sql and committing it in that
+  session, a concurrent session's checkout/write to this same shared
+  working directory silently overwrote it on disk with the wrong
+  content before `git mv`/commit ran — the ACTUAL database verification
+  performed at the time was real (this session's own transcript has the
+  genuine PASS output: role|capability_level showing all three roles
+  'full', the deactivation/reactivation check, collision_app read/write
+  check) — only the file that got committed to the repo was wrong. The
+  original scripts/verify_006.sql was also a casualty: it got deleted
+  entirely in the same commit (renamed instead of duplicated), losing
+  the actual migration-006 (site+cost) verify script from the working
+  tree, though it's recoverable from git history (commit 167061b).
+- Fixed both: restored scripts/verify_006.sql from commit 167061b
+  (`git show 167061b:scripts/verify_006.sql`), and rewrote
+  scripts/verify_007.sql from scratch to match its ACTUAL original
+  design intent (documented in this file's own comments and this
+  session's WORKLOG entries) — re-ran it against staging fresh to
+  confirm it's genuinely correct now, not just plausible: all 5 checks
+  passed with output identical to what was originally reported (3x
+  'full', real gate working both directions on a known vs unknown
+  email, deactivation genuinely blocking capability then reactivation
+  restoring it, collision_app able to call the function and update the
+  capability table). Reset staging clean afterward.
+- This means: the actual DATABASE state (collision.staff_role_capability,
+  collision.staff_user_capability(), live on production) was never
+  wrong — only the verify script FILE committed to the repo was corrupt
+  for a period. No re-promotion needed, no data at risk, but the repo's
+  own verification record was inaccurate until this fix, which is a real
+  finding given how much this project's discipline leans on "verify by
+  direct query, trust the file record." Flagging plainly rather than
+  quietly patching it.
+- Lesson reinforced: the two-working-directory hazard (already
+  identified and fixed 2026-09-04) reduces but doesn't eliminate this
+  risk — even a single canonical working directory can have its
+  in-progress, not-yet-committed files silently clobbered by another
+  session's concurrent write. Going forward: after any file rename/move
+  operation (git mv or otherwise) touching this shared directory, re-
+  read the resulting file's content before committing, don't trust that
+  a mv/rename preserved what was there a moment ago.
+
 

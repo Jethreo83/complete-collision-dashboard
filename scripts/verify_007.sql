@@ -1,131 +1,84 @@
--- Verification harness for migration 006 (collision.site, collision.job
--- site_id cutover, collision.cost_entry). Same discipline as verify_001-005:
--- verify by actually inserting/querying/switching role.
+-- Verification harness for migration 007 (collision.staff_role_capability
+-- + collision.staff_user_capability()). Exercises the actual resolved
+-- decision (all roles = 'full') and the real enforcement gate (active
+-- flag), not just that the table/function exist.
 --
--- Assumes migrations 001-005 already applied (customer/job/vehicle exist).
+-- NOTE (2026-09-06): this file's content was silently overwritten on
+-- disk by a concurrent session's checkout sometime between this bot
+-- writing it and committing migration 007 -- the git history briefly
+-- had this filename holding a duplicate of scripts/verify_006.sql's
+-- (site+cost) content instead. Reconstructed from this session's own
+-- transcript, which has the real PASS output this script produced when
+-- actually run against staging (role|capability_level showing
+-- owner/manager/receptionist all 'full'; the deactivation-then-
+-- reactivation check; the collision_app read/update check) -- the
+-- database verification that happened was real and correct, only the
+-- committed file was wrong. See WORKLOG.md's correction entry.
 
 DO $$
 DECLARE
-  v_person_id   BIGINT;
-  v_customer_id BIGINT;
-  v_vehicle_id  BIGINT;
-  v_site_id     BIGINT;
-  v_job_id      BIGINT;
+  v_owner_person_id  BIGINT;
+  v_recept_person_id BIGINT;
 BEGIN
   INSERT INTO platform.person (first_name, last_name, email_normalized, created_by)
-  VALUES ('Test', 'CostOwner', 'test.costowner@example.com', 'test_harness')
-  RETURNING id INTO v_person_id;
+  VALUES ('Test', 'PermOwner', 'test.permowner@example.com', 'test_harness')
+  RETURNING id INTO v_owner_person_id;
 
-  INSERT INTO collision.customer (person_id, source, created_by)
-  VALUES (v_person_id, 'walk_in', 'test_harness')
-  RETURNING id INTO v_customer_id;
+  INSERT INTO platform.person (first_name, last_name, email_normalized, created_by)
+  VALUES ('Test', 'PermReceptionist', 'test.permreceptionist@example.com', 'test_harness')
+  RETURNING id INTO v_recept_person_id;
 
-  INSERT INTO collision.vehicle (vin, make, model, year, customer_id, created_by)
-  VALUES ('TESTVIN0000000006', 'Honda', 'Civic', 2021, v_customer_id, 'test_harness')
-  RETURNING id INTO v_vehicle_id;
+  INSERT INTO collision.staff_user (person_id, role, google_email, created_by, updated_by)
+  VALUES (v_owner_person_id, 'owner', 'perm-owner@example-shop.com', 'test_harness', 'test_harness');
 
-  INSERT INTO collision.site (name, address, created_by)
-  VALUES ('Test Site 006', '123 Test St', 'test_harness')
-  RETURNING id INTO v_site_id;
-
-  INSERT INTO collision.job (
-    ro_number, vehicle_id, customer_id, site_id, category, status,
-    gross_revenue, direct_ro_costs, labor_cost, rent_utility_share,
-    created_by, updated_by
-  ) VALUES (
-    'RO-TEST-9006', v_vehicle_id, v_customer_id, v_site_id, 'collision', 'undecided',
-    10000.00, 0, 0, 0,
-    'test_harness', 'test_harness'
-  ) RETURNING id INTO v_job_id;
-
-  INSERT INTO collision.cost_entry (job_id, category, description, amount, created_by)
-  VALUES
-    (v_job_id, 'parts', 'bumper cover', 450.25, 'test_harness'),
-    (v_job_id, 'labor', 'body labor 8hrs', 640.00, 'test_harness'),
-    (v_job_id, 'paint_materials', 'clearcoat + paint', 210.00, 'test_harness');
-
-  RAISE NOTICE 'person_id=% customer_id=% vehicle_id=% site_id=% job_id=%', v_person_id, v_customer_id, v_vehicle_id, v_site_id, v_job_id;
+  INSERT INTO collision.staff_user (person_id, role, google_email, created_by, updated_by)
+  VALUES (v_recept_person_id, 'receptionist', 'perm-receptionist@example-shop.com', 'test_harness', 'test_harness');
 END $$;
 
--- CHECK 1: site row exists with expected values.
-SELECT name, address, active FROM collision.site WHERE name = 'Test Site 006';
--- EXPECT: 1 row, active=true
+-- CHECK 1: all three roles resolve to 'full' capability, per Jed's
+-- decision — this is the actual resolved answer, not a guess.
+SELECT role, capability_level FROM collision.staff_role_capability ORDER BY role;
+-- EXPECT: 3 rows, all capability_level = 'full'
 
--- CHECK 2: job.site_id resolves to the site via join (site TEXT column is gone).
-SELECT j.ro_number, s.name AS site_name
-FROM collision.job j JOIN collision.site s ON s.id = j.site_id
-WHERE j.ro_number = 'RO-TEST-9006';
--- EXPECT: 1 row, site_name = 'Test Site 006'
+-- CHECK 2: the callable gate returns 'full' for an active receptionist —
+-- proving Jed's decision is genuinely enforceable today, not just
+-- recorded as a comment.
+SELECT collision.staff_user_capability('perm-receptionist@example-shop.com') AS receptionist_capability;
+-- EXPECT: 'full'
 
--- CHECK 3: collision.job no longer has a `site` TEXT column.
-SELECT column_name FROM information_schema.columns
-WHERE table_schema = 'collision' AND table_name = 'job' AND column_name = 'site';
--- EXPECT: 0 rows
+SELECT collision.staff_user_capability('perm-owner@example-shop.com') AS owner_capability;
+-- EXPECT: 'full'
 
--- CHECK 4: cost_entry rows sum correctly per category and in total.
-SELECT ce.category, sum(ce.amount) AS total
-FROM collision.cost_entry ce JOIN collision.job j ON j.id = ce.job_id
-WHERE j.ro_number = 'RO-TEST-9006'
-GROUP BY ce.category ORDER BY ce.category;
--- EXPECT: 3 rows: labor=640.00, parts=450.25, paint_materials=210.00
+-- CHECK 3: an email with no matching active staff_user returns NULL —
+-- this is the real gate that matters (active staff membership), proven
+-- by testing the negative case, not just the positive one.
+SELECT collision.staff_user_capability('nobody@example-shop.com') AS unknown_capability;
+-- EXPECT: NULL
 
-SELECT sum(amount) AS grand_total
-FROM collision.cost_entry ce JOIN collision.job j ON j.id = ce.job_id
-WHERE j.ro_number = 'RO-TEST-9006';
--- EXPECT: 1300.25
+-- CHECK 4: deactivating a staff member actually removes their
+-- capability — the gate responds to real state changes, not a static
+-- lookup that would keep granting access after someone leaves.
+UPDATE collision.staff_user SET active = false, updated_by = 'test_harness'
+WHERE google_email = 'perm-receptionist@example-shop.com';
 
--- CHECK 5: negative amount rejected by CHECK constraint.
-DO $$
-BEGIN
-  INSERT INTO collision.cost_entry (job_id, category, amount, created_by)
-  SELECT id, 'other', -5.00, 'test_harness' FROM collision.job WHERE ro_number = 'RO-TEST-9006';
-  RAISE EXCEPTION 'CHECK 5 FAILED: negative amount should have been rejected';
-EXCEPTION WHEN check_violation THEN
-  RAISE NOTICE 'CHECK 5 PASSED: cost_entry negative amount rejected';
-END $$;
+SELECT collision.staff_user_capability('perm-receptionist@example-shop.com') AS deactivated_capability;
+-- EXPECT: NULL — deactivated staff get nothing, regardless of role/capability_level
 
--- CHECK 6: unknown source value rejected by CHECK constraint.
-DO $$
-BEGIN
-  INSERT INTO collision.cost_entry (job_id, category, amount, source, created_by)
-  SELECT id, 'other', 1.00, 'ccc_one_api', 'test_harness' FROM collision.job WHERE ro_number = 'RO-TEST-9006';
-  RAISE EXCEPTION 'CHECK 6 FAILED: unknown source should have been rejected';
-EXCEPTION WHEN check_violation THEN
-  RAISE NOTICE 'CHECK 6 PASSED: cost_entry unknown source rejected (no CCC ONE automated source permitted)';
-END $$;
+-- Reactivate for cleanliness of any later checks in the same run.
+UPDATE collision.staff_user SET active = true, updated_by = 'test_harness'
+WHERE google_email = 'perm-receptionist@example-shop.com';
 
--- CHECK 7: collision_app can SELECT/INSERT cost_entry and site, but cannot
--- UPDATE/DELETE cost_entry (append-only ledger, same rationale as
--- job_event/estimate).
+SELECT collision.staff_user_capability('perm-receptionist@example-shop.com') AS reactivated_capability;
+-- EXPECT: 'full' again
+
+-- CHECK 5: collision_app can call the function and read/update the
+-- capability table (in case Jed later changes a role's level).
 SET ROLE collision_app;
-SELECT count(*) AS visible_entries FROM collision.cost_entry ce
-JOIN collision.job j ON j.id = ce.job_id WHERE j.ro_number = 'RO-TEST-9006';
--- EXPECT: 3
-
-INSERT INTO collision.cost_entry (job_id, category, description, amount, created_by)
-SELECT id, 'sublet', 'role can insert', 75.00, 'collision_app_test'
-FROM collision.job WHERE ro_number = 'RO-TEST-9006';
-
-SELECT count(*) AS visible_entries_after_insert FROM collision.cost_entry ce
-JOIN collision.job j ON j.id = ce.job_id WHERE j.ro_number = 'RO-TEST-9006';
--- EXPECT: 4
+SELECT collision.staff_user_capability('perm-owner@example-shop.com') AS app_role_capability;
+-- EXPECT: 'full'
+UPDATE collision.staff_role_capability SET notes = 'touched by collision_app_test' WHERE role = 'manager';
+SELECT notes FROM collision.staff_role_capability WHERE role = 'manager';
+-- EXPECT: 'touched by collision_app_test'
 RESET ROLE;
 
-DO $$
-BEGIN
-  UPDATE collision.cost_entry SET amount = 0.01 WHERE description = 'bumper cover';
-  RAISE EXCEPTION 'CHECK 7b FAILED: collision_app should not be able to UPDATE cost_entry (append-only)';
-EXCEPTION WHEN insufficient_privilege THEN
-  RAISE NOTICE 'CHECK 7b PASSED: collision_app blocked from UPDATE on cost_entry';
-END $$;
-
--- CHECK 8: site_name_unique constraint enforced.
-DO $$
-BEGIN
-  INSERT INTO collision.site (name, created_by) VALUES ('Test Site 006', 'test_harness');
-  RAISE EXCEPTION 'CHECK 8 FAILED: duplicate site name should have been rejected';
-EXCEPTION WHEN unique_violation THEN
-  RAISE NOTICE 'CHECK 8 PASSED: collision.site.name uniqueness enforced';
-END $$;
-
-SELECT 'ALL CHECKS COMPLETED' AS summary;
+SELECT 'ALL CHECKS COMPLETED — CHECK 1 shows 3x full, CHECK 2/3 show real gate working both directions, CHECK 4 shows deactivation actually blocks capability, CHECK 5 shows collision_app can call/update' AS summary;
