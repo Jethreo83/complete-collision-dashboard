@@ -1255,4 +1255,68 @@ promoted to production yet -- per his instruction, reporting back first)
   promoting to production as usual"). Holding for his go-ahead before
   the next staging-reset-check-promote cycle.
 
+2026-09-06 (migration 010 promoted to production, real cleanup incident
+along the way -- documenting fully)
+- Re-checked git log/fetch/status first (clean, no concurrent activity),
+  reset staging fresh, re-applied migration 010, re-ran verify_010.sql
+  (7/7 passed again) and scripts/_smoke_010_app_layer.py against fresh
+  staging (all checks passed again) -- same discipline as every prior
+  promotion, re-verifying immediately before promoting rather than
+  trusting an earlier run.
+- Re-checked production state immediately before promoting: 0 job rows,
+  0 cost_entry rows, no pre-existing collision.*cost* functions or
+  trigger -- clean, matches expectations. Promoted migration 010 to
+  production. Confirmed live by direct query: job_labor_cost_total(),
+  job_direct_cost_total(), recalculate_job_costs_trigger(), the
+  cost_entry_recalculate_job_costs trigger, and collision_app's
+  column-level grants on labor_cost/direct_ro_costs correctly showing
+  SELECT only (no UPDATE/INSERT) -- all exactly as designed.
+- REAL INCIDENT, not glossed over: ran scripts/_smoke_010_app_layer.py
+  against PRODUCTION itself (same discipline as staging -- confirm the
+  actual app code path works there too, not just raw SQL), and it
+  reported success correctly -- but a POST-RUN row-count check found
+  customer_rows=1, vehicle_rows=1, person_rows=1 on production, not the
+  expected 0. Root cause: the smoke script's "prerequisites" step
+  (person/customer/vehicle, needed before the SET ROLE collision_app
+  tests) had an explicit cur.connection.commit() call, written when this
+  script only ever ran against disposable staging. Running the same
+  script against production for the first time exposed that the
+  commit() was never actually safe -- it just happened not to matter on
+  staging, which gets reset anyway. This left one real
+  platform.person/collision.customer/collision.vehicle row (email
+  smoke.test010@example.com) live on production between the promotion
+  and the discovery.
+- FOUND AND FIXED IMMEDIATELY: identified the exact rows via direct
+  query (id=5 person, id=2 customer, id=2 vehicle, all matching the
+  smoke test's known test data, not ambiguous with anything real),
+  deleted them via a direct, targeted DELETE (matched on id AND the
+  test's known values, not a blanket delete), re-confirmed via query
+  that production is back to 0 rows on every table. No customer,
+  vehicle, job, or cost data was ever real -- this was 100% this
+  session's own test artifact, not a risk to any actual business data
+  (there is none yet -- Complete Collision hasn't gone live on this
+  system). Still a real mistake: a script commit()ing test data against
+  production without the operator (this session) planning for that
+  possibility ahead of time, caught by a manual afterthought check
+  rather than by the script's own design.
+- FIXED THE SCRIPT ITSELF, not just the immediate mess: rewrote
+  scripts/_smoke_010_app_layer.py so EVERY step (prerequisites, the
+  app-layer test, the CSV-import test) runs inside ONE single
+  transaction with NO commit anywhere in the script, rolled back
+  together at the very end regardless of environment. Re-tested against
+  staging first (never re-test a just-edited script against production
+  first) -- all checks still pass, confirmed 0 rows left afterward.
+  Re-confirmed production is genuinely clean (0 rows on every
+  collision.* table and platform.person) after the manual cleanup.
+- LESSON, added to this session's own standing practice: a script
+  written and only ever run against a disposable environment (staging,
+  which resets) can have real unsafe assumptions (an explicit commit)
+  baked in without ever being caught -- "verified on staging" is not
+  the same guarantee as "safe to run against production," even when the
+  script's own printed output says every check passed. Before running
+  ANY script against production for the first time, actually re-read it
+  end-to-end for commit()/autocommit=True calls specifically, not just
+  trust that "it worked on staging" implies "it's safe everywhere."
+
+
 
