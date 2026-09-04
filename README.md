@@ -404,6 +404,35 @@ and requires clarification before any live integration is built.
   session's server process actually gone — same discipline flagged as a
   host-specific gotcha in the prior cycle's entry above.
 
+- **New this cron cycle (2026-09-06, continuous-build, coverage gap
+  closed):** `app/csv_import.py` — the module implementing ADR-001 §1's
+  actual v1 answer for CCC ONE-adjacent data entry (manual/CSV only) — had
+  **zero test coverage anywhere in the repo** despite being a core,
+  actively-used Phase 1 workflow (confirmed by searching for
+  `test_csv_import*` before writing anything; nothing existed). Added
+  `test_csv_import.py`: 37 new tests, no DB dependency (a small
+  `FakeCursor` serves the module's direct `platform.person` email-lookup
+  query; every `app.repository.*` call is mocked exactly like
+  `test_api.py` mocks `app.api.repo.*`), using **real temporary CSV
+  files** written to disk and read through the actual `csv.DictReader`
+  code path (not hand-built dicts bypassing CSV parsing). Coverage
+  includes: all four importers' happy paths, dry-run-never-writes for
+  each, idempotency (existing customer/vehicle/RO correctly skipped, not
+  duplicated), the VIN-less job fallback's three cases (zero vehicles →
+  error, 2+ vehicles → ambiguous error, exactly 1 → auto-disambiguated),
+  every field validator (`_clean`/`_parse_decimal`/`_parse_int`/
+  `_parse_date`), and — the one genuinely load-bearing behavior in this
+  module — the migration-010 compatibility path in `import_jobs_csv()`
+  that converts a jobs.csv row's flat `labor_cost`/`direct_ro_costs`
+  into real `collision.cost_entry` rows instead of silently dropping
+  them now that those columns are DB-trigger-derived (confirmed both the
+  non-zero-converts and zero-does-not-convert cases, and that a
+  multi-row file with one bad row still commits the good rows rather
+  than aborting the whole import). Full suite now 91/91 (was 54/54).
+  No SQL migration, no schema change, no external contact — pure test
+  coverage for existing application code, closing a real gap rather than
+  building anything new speculatively.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

@@ -358,7 +358,43 @@ NOT DONE / EXPLICITLY DEFERRED
   prior session, unchanged.
 
 
-Session: 2026-09-04 (cron cycle, continuous-build task)
+Session: 2026-09-04 (cron cycle, continuous-build task — closes a real
+test-coverage gap: app/csv_import.py had zero tests anywhere in the repo)
+
+FILES CREATED
+-------------
+test_csv_import.py
+  37 new tests, no DB dependency (FakeCursor + mocked app.repository.*
+  calls, same pattern as test_api.py). Uses real temp CSV files read via
+  the actual csv.DictReader path. Covers all four importers' happy
+  paths, dry-run behavior, idempotency, error rows, the VIN-less job
+  fallback's three branches, every field parser, and the migration-010
+  flat-cost-to-cost_entry compatibility conversion (the one genuinely
+  load-bearing behavior in this module).
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- New file run standalone: 37/37 passed on first real run.
+- Full suite (pytest): 91/91 passed (54/54 prior + 37 new), no
+  regressions in files this session didn't touch.
+- Added atexit cleanup for the tempfile.mkstemp() scratch CSVs (hygiene,
+  not correctness) and re-ran: still 91/91.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No SQL migration, no schema change -- pure test-authoring.
+- No CSV-upload HTTP route added (importers remain CLI-only via
+  scripts/csv_import_cli.py) -- flagged as a plausible next step, not
+  built speculatively without a concrete UI/UX shape from Jed.
+- Same CCC ONE license / content_manifest.json export blockers as ever.
+- gross_revenue post-intake edit, provision_new_staff_user() HTTP route,
+  identity-service swap -- all carried over unchanged.
+
+Next up: a POST /import/{...} HTTP route for the CSV importers, once a
+frontend/upload UX is prioritized; gross_revenue edit audit-trail design.
+
+
 
 FILES MODIFIED
 --------------

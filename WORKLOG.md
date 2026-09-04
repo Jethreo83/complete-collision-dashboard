@@ -1647,8 +1647,95 @@ deferred):
 2. Same CCC ONE / content_manifest.json blockers as always.
 
 
-Session: 2026-09-04 (cron cycle, continuous-build task — closes prior
-cycle's flagged "Next up" item)
+Session: 2026-09-04 (cron cycle, continuous-build task — closes a real
+test-coverage gap rather than building new functionality)
+
+FILES CREATED
+-------------
+test_csv_import.py
+  app/csv_import.py -- the module implementing ADR-001 §1's actual v1
+  answer for CCC ONE-adjacent data entry (manual/CSV only) -- had zero
+  test coverage anywhere in the repo (checked via search_files for
+  test_csv_import* first; confirmed nothing existed) despite being core,
+  actively-used Phase 1 workflow code. 37 new tests, no DB dependency
+  (small FakeCursor serves the module's direct platform.person
+  email-lookup query by inspecting the bound parameter, not the SQL
+  text; every app.repository.* call mocked, same pattern test_api.py
+  already uses for app.api.repo.*). Writes REAL temporary CSV files to
+  disk via tempfile.mkstemp() and reads them through the actual
+  csv.DictReader path (ci._read_rows()) rather than hand-building dicts
+  that would bypass the CSV parsing this module exists to do; registers
+  an atexit cleanup so those scratch files don't accumulate in the OS
+  temp dir across runs.
+
+  Coverage: all four importers' (customers/vehicles/jobs/cost_entries)
+  happy paths and dry-run-never-writes behavior; idempotency (existing
+  customer/vehicle/RO correctly skipped rather than duplicated); every
+  error-row case (missing required field, person not found, category/
+  status validation, negative cost amount, unknown RO); the VIN-less
+  job fallback's three branches (zero vehicles on file -> error, 2+ ->
+  ambiguous error requiring an explicit VIN, exactly 1 -> silently
+  disambiguated); every field parser (_clean/_parse_decimal/_parse_int/
+  _parse_date, including the invalid-input error-raising paths); and
+  the one genuinely load-bearing, easy-to-silently-break behavior in
+  this module -- the migration 010 compatibility path where a jobs.csv
+  row's flat labor_cost/direct_ro_costs (columns collision_app can no
+  longer write directly since migration 010's REVOKE) get converted
+  into real collision.cost_entry rows instead of being silently dropped
+  -- confirmed both that non-zero values convert correctly (right
+  category, amount, source='csv_import', correct source_file) and that
+  zero values create no cost_entry at all; also confirmed a multi-row
+  file with one bad row still commits the good rows rather than
+  aborting the whole import (import_cost_entries_csv iterates rows
+  independently, catching per-row exceptions into report.errors).
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first -- clean, no concurrent-session
+  drift, no uncommitted edits from a prior unattended run.
+- New file run standalone first (python test_csv_import.py): 37/37
+  passed on the first real run (no fixture debugging needed -- each
+  FakeCursor/mock shape was checked against the actual module code
+  read beforehand, not guessed).
+- Full suite via pytest (test_models.py + test_api.py +
+  test_pdr_settlement.py + test_csv_import.py): 91/91 passed (54/54
+  prior + 37 new), confirming zero regressions in the existing test
+  files this session didn't touch.
+- Re-ran the full suite again after adding the atexit temp-file cleanup
+  (a hygiene fix, not a correctness fix) to confirm the cleanup change
+  itself didn't break anything: still 91/91.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No SQL migration touched, no schema change -- pure test-authoring for
+  existing application code. Migration 006/010 already resolved to
+  production in a prior cycle; no promotion decision was pending or
+  acted on this session.
+- Did not add a CSV-upload HTTP route (app/api.py has no endpoint for
+  triggering app/csv_import.py's importers yet -- CLI-only via
+  scripts/csv_import_cli.py, unchanged this session). Flagging as a
+  plausible next step below rather than building it speculatively in
+  the same session as the coverage fix.
+- Same CCC ONE license / content_manifest.json export blockers as every
+  prior session, unchanged.
+- provision_new_staff_user() HTTP route, identity-service swap -- both
+  still deferred, unchanged reasoning from prior cycles.
+
+Next up (not started this session, flagged rather than silently
+deferred):
+1. app/csv_import.py's importers have no HTTP-reachable path -- only
+   scripts/csv_import_cli.py (CLI) can drive them today. A
+   `POST /import/{customers|vehicles|jobs|cost_entries}` route
+   (multipart file upload or a server-side path, dry_run as a query
+   param) would be the natural next step once a frontend/upload UI is
+   prioritized -- not built this cycle since Jed hasn't asked for the
+   upload UX shape yet and guessing at it (sync vs async, file-size
+   limits, response shape for a large report) would be speculative.
+2. No route/repo function yet to edit gross_revenue after RO creation
+   (carried over from the prior cycle -- still needs an audit-trail
+   design decision before building).
+3. Same CCC ONE / content_manifest.json blockers as always.
+
 
 FILES MODIFIED
 --------------
