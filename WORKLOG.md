@@ -260,3 +260,67 @@ still in the safe lane once the full rule text comes through.
   Documented in README.md's Deploy process section so it's not just in
   this log. No migration of mine was mid-flight when this was raised —
   003 was already fully promoted and confirmed live.
+
+2026-09-04 (later still — receptionist permissions PENDING for Jed,
+cleared by hermes to build the safe subset)
+- hermes: receptionist permission boundaries logged as PENDING in
+  vls-dashboard docs/OVERNIGHT_DECISIONS.md for Jed to answer directly.
+  Cleared to build "the safe subset now (role enum, provisioning table
+  shape) without finalizing what a receptionist can actually touch. Stop
+  short of wiring real permission checks until that answer comes back."
+- Built migrations/004_collision_staff_user.sql exactly to that scope:
+  collision.staff_role enum (owner/manager/receptionist),
+  collision.staff_user (person_id -> platform.person, role,
+  google_email, active, provisioned_by_staff_user_id for the
+  admin-provisioned chain per ADR-001 §4). Explicitly does NOT include
+  any RLS/role-scoped visibility restriction or route-guard logic —
+  collision_app has the same blanket grant on this table as every other
+  table in the schema, confirmed (not just asserted) by verify_004.sql's
+  final check, which specifically demonstrates the ABSENCE of permission
+  restriction rather than only testing the shape's presence.
+- Stated plainly in the migration file's header (not hidden): this bot
+  has not read VLS migration 005's actual SQL (out of scope per its
+  standing VLS-contact boundary). The "Google Sign-In restricted to
+  business domain, role enum, admin-provisioned" pattern here is built
+  entirely from ADR-001 §4's prose description, not from copying VLS's
+  real implementation — flagged for reconciliation later if this bot is
+  ever given permission to read that source directly. No CHECK constraint
+  guessing at the actual Google Workspace domain string, since that
+  domain isn't confirmed in anything this bot has read (same
+  no-placeholder-guessing discipline as elektrica.vehicle's enum
+  handling).
+- Wrote scripts/verify_004.sql (5 checks: both roles insertable with
+  correct enum values, provisioning chain recorded correctly,
+  one-row-per-person constraint enforced, google_email uniqueness
+  enforced, and — the check that matters most given the scope limit —
+  collision_app can read AND update any staff_user row today with no
+  role-based restriction, confirming the deferred piece is genuinely
+  deferred, not accidentally half-wired).
+- Applied the new shared-staging discipline for real this time: checked
+  staging's actual state before doing anything and found it had drifted
+  (customer/job/job_event/vehicle present, estimate MISSING — another
+  track's reset had landed since my last session, exactly the scenario
+  hermes warned about). Reapplied migration 003 to restore the expected
+  baseline before applying/testing 004. This confirms the shared-staging
+  warning was concretely real, not just theoretical, and that the
+  re-verify-before-acting practice already caught something.
+- Ran verify_004.sql on staging — all 5 checks passed by real output.
+  Reset staging clean. Checked PRODUCTION's actual state directly
+  immediately before promoting (confirmed: customer/estimate/job/
+  job_event/vehicle, no staff_user, nothing unexpected) — same
+  just-in-time verification discipline applied to production, not only
+  staging. Applied migration 004 to production, re-queried immediately
+  after: staff_user now present alongside the rest.
+- Tagged collision-migration-004 only after confirming the commit was on
+  origin/main via git ls-remote (same careful-tagging discipline as 003).
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source, did not
+  wire any actual permission logic — stayed exactly inside the scope
+  hermes specified.
+
+Next up: waiting on Jed's direct answer on receptionist permission
+boundaries before wiring any real access control on collision.staff_user.
+Other Phase 1 items that don't depend on that answer remain open:
+content library migration, JSON store migration (cc_local_data.json
+etc., handoff §2.5) if/when those exports become available.
+

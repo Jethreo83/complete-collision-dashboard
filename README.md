@@ -4,7 +4,7 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 003, tag `collision-migration-003`)
+## Status (as of migration 004, tag `collision-migration-004`)
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -61,6 +61,25 @@ discipline as VLS and Elektrica: schema and core business logic first.
   ai_proposed-unconfirmed accepted, partial-confirmation rejected,
   version uniqueness, `collision_app` blocked from UPDATE). Tagged
   `collision-migration-003`.
+- **`collision.staff_user`** (`migrations/004_collision_staff_user.sql`) —
+  role enum (`owner`/`manager`/`receptionist`) and provisioning-table
+  shape ONLY, per hermes's 2026-09-04 instruction to build this subset
+  while the exact receptionist permission boundary stays logged as
+  PENDING for Jed. Deliberately does NOT include: any RLS/role-scoped
+  visibility restriction, route-guards, or a decision about what a
+  receptionist can/can't touch — `collision_app` currently has the same
+  blanket SELECT/INSERT/UPDATE on this table as every other Complete
+  Collision table, which is intentional and confirmed by
+  `scripts/verify_004.sql`'s own last check (it explicitly verifies the
+  *absence* of role-based restriction, not just the presence of the
+  shape). This bot has not read VLS migration 005's actual SQL (out of
+  scope per its VLS boundary) — the pattern here (Google Sign-In
+  restricted to business domain, role enum, admin-provisioned) is built
+  from ADR-001 §4's prose description only, flagged explicitly in the
+  migration file as a limitation to reconcile later if needed. Verified
+  with 5 checks (both roles insertable, provisioning chain recorded,
+  one-row-per-person and email uniqueness enforced, no permission
+  restriction exists yet). Tagged `collision-migration-004`.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -107,7 +126,11 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
-- Staff auth/roles (owner/manager/receptionist), per ADR-001 §4
+- **Receptionist permission boundaries** — PENDING, logged for Jed in
+  vls-dashboard's `docs/OVERNIGHT_DECISIONS.md` per hermes (2026-09-04).
+  `collision.staff_user` (role enum + provisioning shape) exists;
+  wiring real RLS/route-guard permission checks per role is explicitly
+  deferred until that answer comes back.
 - `valid_next_states()`-style transition enforcement on `collision.job`
   (currently append-only log, no SQL-level state-machine constraint — see
   migrations/002_collision_job.sql's SIMPLIFICATION note)
