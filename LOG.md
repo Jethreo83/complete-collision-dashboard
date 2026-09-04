@@ -5,8 +5,76 @@ Purpose: quick-scan index of what changed and why, for Jed's review
 without re-reading full transcripts. Full narrative/verification detail
 lives in WORKLOG.md; this file is the compact pointer into it.
 
-Session: 2026-09-04, Phase 1 implementation ("begin Phase 1 now" —
-project structure, core data models, manual/CSV entry workflows)
+Session: 2026-09-05 (daily cron cycle — Phase 1 HTTP API layer)
+
+FILES CREATED
+-------------
+app/api.py
+  FastAPI wrapper over app/repository.py: job read, job_event read,
+  status transition, cost_entry list/add, cost recalculation, /health.
+  Deliberately unauthenticated (no session/identity mechanism exists yet
+  to check against collision.staff_user_capability()) — flagged in the
+  file header. NOT deployed, NOT exposed externally, NOT auto-started —
+  run locally on demand only. See README.md's Application layer section
+  and WORKLOG.md's 2026-09-05 entry for full detail.
+
+test_api.py
+  13 tests, FastAPI TestClient, all app.repository calls mocked (no DB
+  dependency). RUN: 13/13 passed. Also separately verified by starting
+  the real uvicorn process and hitting it with curl (/health 200,
+  a real production DB lookup returning the expected 404, /docs 200),
+  then killing the process — nothing left running.
+
+FILES MODIFIED
+--------------
+README.md
+  Replaced the stale "no HTTP/API server" line with a full description
+  of app/api.py's routes, scope decision, and verification evidence.
+
+WORKLOG.md
+  Added the 2026-09-05 session narrative; also committed (with review)
+  two uncommitted changes found in the working tree from a separate
+  unattended session: docs/SHARED_CONVENTIONS_NOTE.md (new) and a
+  pdr_settlement.py docstring clarification — both already fully
+  explained under the existing 2026-09-04 "shared conventions" entry,
+  reviewed here as additive/non-conflicting before including in this
+  commit.
+
+VERIFICATION PERFORMED THIS SESSION (real execution, not claims)
+------------------------------------------------------------------
+- Checked git log/fetch for concurrent commits before starting (per
+  standing practice) — clean, no new commits since migration 008; found
+  and reviewed uncommitted working-tree changes (see above).
+- Re-ran test_models.py (12/12) and test_pdr_settlement.py (7/7) fresh
+  before starting new work — no regressions.
+- Re-verified production's real state via scripts/check_state.sql
+  through DATABASE_URL: exactly matches migration 008's expected shape,
+  0 rows everywhere, no drift.
+- Re-verified staging's real state (neondb_owner role, branch NAME
+  positional arg per the standing neonctl workaround) — matches
+  production, migration 006 still unpromoted there as expected.
+- Ran the CSV importers' dry-run mode against staging as a smoke test
+  (customers.csv, cost_entries.csv) — correctly reported expected
+  "not found" errors for prerequisite data that doesn't exist yet;
+  confirms the importers are still live/working against a real
+  connection, nothing written.
+- Wrote and ran test_api.py: 13/13 passed.
+- Started the real app/api.py server (background terminal session),
+  confirmed startup via its own log, issued real curl requests
+  (/health, /jobs/RO-DOES-NOT-EXIST — real DB round-trip, /docs), then
+  killed the process. Nothing left running, nothing exposed beyond
+  localhost.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 006 still not promoted — awaiting Jed's answer on the
+  cost-derivation design question (unchanged, carried over).
+- No auth/session/route-guard wiring on app/api.py — correctly deferred,
+  no identity mechanism exists yet to enforce against.
+- No frontend.
+- content_manifest.json / cc_local_data.json real data imports — still
+  blocked on export access to "the mini" (unchanged).
+
 
 FILES CREATED
 -------------

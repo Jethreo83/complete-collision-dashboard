@@ -762,5 +762,97 @@ standard, six primitives)
   table, or the CCC ONE webhook's inbound-match-then-propose wiring)
   should reference docs/SHARED_CONVENTIONS_NOTE.md explicitly.
 
+2026-09-05 (daily cron cycle — Phase 1 HTTP API layer)
+- Checked git log/fetch for new commits first (per the standing practice
+  adopted 2026-09-04) — none found beyond migration 008, clean baseline.
+  Found uncommitted working-tree changes from a separate/unattended
+  session that had run in the interim but not yet committed:
+  docs/SHARED_CONVENTIONS_NOTE.md (new — six cross-project conventions
+  relayed from Jed's integrator via hermes, see the 2026-09-04 entry
+  immediately above) and a header addition to pdr_settlement.py (same
+  session, documenting the convention #2 resolution). Reviewed both —
+  already fully explained in that entry, additive, non-conflicting,
+  sound — and committed them alongside this session's own work rather
+  than discarding or ignoring them.
+- Re-verified production's real state before touching anything
+  (scripts/check_state.sql via DATABASE_URL): confirmed exactly matching
+  migration 008's expected shape, 0 rows everywhere, migration 006's
+  site/cost_entry tables correctly still ABSENT from production (staging
+  -only, as documented) — no drift since last session's stand-down.
+  Also re-checked staging (neondb_owner role, branch name positional
+  arg per the standing neonctl bug workaround): staging currently mirrors
+  production + migration 006 unpromoted (content_item, customer,
+  estimate, job, job_event, staff_role_capability, staff_user, vehicle —
+  no site/cost_entry table on either branch right now, meaning a
+  previous staging reset landed since migration 006 was last verified
+  there; not a concern since nothing here touches or promotes 006).
+- Ran full existing test suite fresh before starting new work:
+  test_models.py 12/12, test_pdr_settlement.py 7/7 — confirmed still
+  green, no regressions from the uncommitted conventions-doc changes.
+- Picked the next unblocked Phase 1 item: an actual HTTP API surface.
+  Everything blocking further schema/business-logic work (CCC ONE
+  license answer, receptionist boundaries — now resolved by migration
+  007 anyway, migration 006's cost-derivation question) was already
+  flagged as needing Jed; the CLI-only app layer (models/repository/
+  csv_import) was complete and tested but had no way for a future
+  frontend to actually reach it. Building the API doesn't touch any
+  open question — it's a straight wrapper over the already-reviewed
+  repository functions.
+- Built app/api.py: FastAPI wrapper exposing collision.job read/write
+  operations (get job, get job_events, transition status, list/add
+  cost_entry, recalculate costs from entries) plus a bare /health check.
+  Explicitly does NOT wire any auth/permission check — no session/
+  identity mechanism exists anywhere in this codebase yet to check
+  against collision.staff_user_capability() (migrations/007's real,
+  callable gate), so inventing a route-guard now would be guessing at
+  unbuilt architecture rather than enforcing a real decision, same
+  reasoning migrations/007's own header already used for RLS scoping.
+  Flagged prominently in the file's own header AND in README.md, not
+  hidden. NOT started by anything in this repo automatically, NOT
+  exposed externally, NOT deployed anywhere — local-only, run on demand
+  via `uvicorn app.api:app --reload --port 8000`, per this bot's
+  standing draft-and-hold-on-anything-external-facing rule.
+- Wrote test_api.py: 13 tests using FastAPI's TestClient with every
+  app.repository call mocked via unittest.mock.patch (no DB dependency,
+  matching test_models.py's discipline for this layer) — covers every
+  route's happy path, 404 on missing RO, and validation errors (illegal
+  backward status transition, unknown status/category enum value,
+  negative cost amount). Ran: 13/13 passed. Caught and fixed one real
+  bug in the test itself before it was a false negative: an assertion
+  checked `mock_transition.call_args.args[2]` for the actor positional
+  argument, which broke the moment the call shape didn't match that
+  exact index — loosened to check membership across args/kwargs so the
+  test verifies the real contract (actor was passed) rather than an
+  implementation detail of call-argument ordering.
+- Verified by REAL EXECUTION beyond the mocked test suite: started the
+  actual `uvicorn app.api:app` process locally (background terminal
+  session, confirmed "Application startup complete" in its own log
+  before proceeding), then issued real HTTP requests with curl:
+  `GET /health` -> 200 `{"status":"ok"}`; `GET /jobs/RO-DOES-NOT-EXIST`
+  -> 404 with the expected detail message, this one going through the
+  REAL DATABASE_URL connection (not mocked) to production, read-only,
+  confirmed by the uvicorn access log line and by the fact production's
+  job table has 0 rows so 404 is the only correct answer; `GET /docs` ->
+  200 (FastAPI's auto-generated OpenAPI UI rendered correctly). Killed
+  the process immediately after — nothing left running, nothing exposed
+  beyond localhost during the brief live check.
+- Updated README.md's Application layer section: replaced the stale
+  "no HTTP/API server" line in "Not yet built" with a full entry
+  describing app/api.py's routes, its explicit no-auth-yet scope
+  decision and why, and the real-execution verification above.
+- Did not touch CCC ONE, did not deploy externally, did not expose
+  anything beyond localhost, did not send anything to PDR Crew/CCC/
+  customers, did not read VLS source, did not touch migration 006's
+  undecided design question, did not wire any permission/route-guard
+  logic (correctly still pending the auth/session architecture that
+  doesn't exist yet).
 
+Open items for Jed, unchanged from prior session plus:
+7. (carried over) Review and re-promote migration 006 (collision.site +
+   collision.cost_entry) — awaiting answer on whether job's flat cost
+   columns should become fully derived from cost_entry or coexist.
+8. New, low-priority, no action needed yet: once staff auth/session
+   exists, app/api.py's routes need real route-guards wired to
+   collision.staff_user_capability() — flagged in the code, not blocking
+   anything today.
 
