@@ -36,6 +36,20 @@ CSV formats (headers are required, order doesn't matter):
       category one of: collision, pdr, hail
       status one of the 11 job_status values (defaults to 'undecided')
       site is a free-text name — created on demand via get_or_create_site
+      NOTE (migration 010, 2026-09-06): direct_ro_costs/labor_cost are
+      no longer written directly to collision.job (that migration made
+      them genuinely derived from collision.cost_entry, collision_app
+      can no longer INSERT/UPDATE them at all). To avoid SILENTLY
+      DROPPING a value present in an existing/old-format jobs.csv, any
+      non-zero direct_ro_costs/labor_cost on a jobs.csv row is converted
+      into an equivalent collision.cost_entry row at import time (labor_cost
+      -> one 'labor' category entry, direct_ro_costs -> one 'other'
+      category entry, both source='csv_import'/source_file=<filename>,
+      description noting it's a flat total from jobs.csv, not a real
+      itemized breakdown). Prefer cost_entries.csv going forward for
+      genuinely itemized data — this conversion is a compatibility path
+      for the old flat-total format, not the recommended way to enter
+      new data.
 
   cost_entries.csv:
     ro_number, category, description, amount, incurred_at
@@ -315,11 +329,39 @@ def import_jobs_csv(cur, csv_path: str, actor: str, dry_run: bool = True) -> Imp
                     adjuster_name=_clean(row.get("adjuster_name")),
                     posture=_clean(row.get("posture")),
                     gross_revenue=_parse_decimal(row.get("gross_revenue"), "gross_revenue"),
-                    direct_ro_costs=_parse_decimal(row.get("direct_ro_costs"), "direct_ro_costs"),
-                    labor_cost=_parse_decimal(row.get("labor_cost"), "labor_cost"),
                     rent_utility_share=_parse_decimal(row.get("rent_utility_share"), "rent_utility_share"),
                 )
-                repo.create_repair_order(cur, ro, actor)
+                created_ro = repo.create_repair_order(cur, ro, actor)
+
+                # See module docstring's jobs.csv NOTE (migration 010):
+                # direct_ro_costs/labor_cost can no longer be written
+                # directly to collision.job — convert any non-zero value
+                # into a cost_entry row instead of silently dropping it.
+                labor_flat = _parse_decimal(row.get("labor_cost"), "labor_cost")
+                direct_flat = _parse_decimal(row.get("direct_ro_costs"), "direct_ro_costs")
+                source_file = Path(csv_path).name
+                if labor_flat > 0:
+                    repo.add_cost_entry(
+                        cur,
+                        CostEntry(
+                            job_id=created_ro.id, category=CostCategory.LABOR,
+                            description="flat labor_cost total from jobs.csv (not itemized)",
+                            amount=labor_flat, incurred_at=date.today(),
+                            source="csv_import", source_file=source_file,
+                        ),
+                        actor,
+                    )
+                if direct_flat > 0:
+                    repo.add_cost_entry(
+                        cur,
+                        CostEntry(
+                            job_id=created_ro.id, category=CostCategory.OTHER,
+                            description="flat direct_ro_costs total from jobs.csv (not itemized)",
+                            amount=direct_flat, incurred_at=date.today(),
+                            source="csv_import", source_file=source_file,
+                        ),
+                        actor,
+                    )
             report.created += 1
         except Exception as e:
             report.errors.append(f"row {i}: {e}")

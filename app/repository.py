@@ -198,17 +198,29 @@ def _vehicle_from_row(row) -> Vehicle:
 # ---------------------------------------------------------------------------
 
 def create_repair_order(cur, ro: RepairOrder, actor: str) -> RepairOrder:
+    """NOTE (migration 010, 2026-09-06): labor_cost/direct_ro_costs are
+    deliberately NOT in this INSERT's column list anymore. Per Jed's
+    cost-derivation decision, those two columns are now genuinely
+    derived from collision.cost_entry by a DB trigger
+    (collision.recalculate_job_costs_trigger()), and collision_app has
+    no INSERT/UPDATE grant on them at all (column-level REVOKE) --
+    attempting to supply them here would fail with
+    insufficient_privilege. Any labor_cost/direct_ro_costs values on the
+    passed-in `ro` object are silently ignored for this reason; a new
+    job always starts at the column DEFAULT (0) until real cost_entry
+    rows exist for it.
+    """
     cur.execute(
         """
         INSERT INTO collision.job (
             ro_number, vehicle_id, customer_id, site_id, category, status,
             claim_number, insurer, adjuster_name, posture,
-            gross_revenue, direct_ro_costs, labor_cost, rent_utility_share,
+            gross_revenue, rent_utility_share,
             created_by, updated_by
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s,
-            %s, %s, %s, %s,
+            %s, %s,
             %s, %s
         ) RETURNING *
         """,
@@ -216,7 +228,7 @@ def create_repair_order(cur, ro: RepairOrder, actor: str) -> RepairOrder:
             ro.ro_number, ro.vehicle_id, ro.customer_id, ro.site_id,
             ro.category.value, ro.status.value,
             ro.claim_number, ro.insurer, ro.adjuster_name, ro.posture,
-            ro.gross_revenue, ro.direct_ro_costs, ro.labor_cost, ro.rent_utility_share,
+            ro.gross_revenue, ro.rent_utility_share,
             actor, actor,
         ),
     )
@@ -344,34 +356,28 @@ def list_cost_entries(cur, ro_number: str) -> list[CostEntry]:
 
 
 def recalculate_costs_from_entries(cur, ro_number: str, actor: str) -> RepairOrder:
-    """Explicit, opt-in reconciliation of collision.job's flat cost
-    columns from itemized collision.cost_entry rows — NOT an automatic
-    trigger (see migrations/006 header for why: avoids silently
-    overwriting a manually-entered aggregate with a possibly incomplete
-    itemized total).
+    """SUPERSEDED (migration 010, 2026-09-06). This function's original
+    job -- explicit, opt-in reconciliation of collision.job's flat cost
+    columns from itemized collision.cost_entry rows -- is now handled
+    automatically by a DB trigger (collision.recalculate_job_costs_
+    trigger()) firing on every cost_entry write, per Jed's decision that
+    labor_cost/direct_ro_costs should be fully derived, not
+    separately-entered-then-optionally-reconciled. collision_app also
+    no longer has UPDATE/INSERT privilege on those two specific columns
+    (migration 010's REVOKE), so the UPDATE below would now fail with
+    insufficient_privilege under a real app connection.
 
-    Mapping (this bot's own reasonable convention, not sourced from a
-    document — flag to Jed if wrong):
-      labor_cost      = sum of category='labor' entries
-      direct_ro_costs = sum of all OTHER categories (parts, paint_materials,
-                         sublet, rental_reimbursement, other)
-      rent_utility_share is NOT touched — it's a fixed shop-overhead
-      allocation per RO, not an itemized line item in cost_entry's
-      category set, so there's nothing to sum it from.
+    Kept in the codebase (not deleted) as a no-op passthrough rather
+    than removed outright, so any existing caller (this session found
+    test_api.py and scripts/_smoke_repository.py both called it) gets a
+    correct, already-current job back instead of a hard break -- same
+    reasoning as api.py's /costs/recalculate route above it. A real
+    cleanup pass removing this function AND its two callers is a
+    reasonable follow-up, not done here to keep this migration's
+    application-layer fix minimal and reviewable.
     """
-    entries = list_cost_entries(cur, ro_number)
-    labor_total = sum((e.amount for e in entries if e.category == CostCategory.LABOR), Decimal("0"))
-    other_total = sum((e.amount for e in entries if e.category != CostCategory.LABOR), Decimal("0"))
-    cur.execute(
-        """
-        UPDATE collision.job
-        SET labor_cost = %s, direct_ro_costs = %s, updated_at = now(), updated_by = %s
-        WHERE ro_number = %s
-        RETURNING *
-        """,
-        (labor_total, other_total, actor, ro_number),
-    )
-    return _repair_order_from_row(cur.fetchone())
+    return get_repair_order_by_ro_number(cur, ro_number)
+
 
 
 def _cost_entry_from_row(row) -> CostEntry:

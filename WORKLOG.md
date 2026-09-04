@@ -1166,3 +1166,93 @@ deferred):
    real imports (no export access), CCC ONE license answer (Phase 3),
    migration 006/010 promotion (Jed's explicit call only).
 
+2026-09-06 (migration 010 applied to staging per Jed's go-ahead, NOT
+promoted to production yet -- per his instruction, reporting back first)
+- Checked git log/fetch/status first per standing practice -- found a
+  new concurrent-session commit (bd200f5, staff provisioning +
+  person-row creation, closing item 3 from this session's own earlier
+  backlog flag) had already landed cleanly on origin/main, no conflict
+  with this session's work. Verified it independently: real, tested
+  (15/15 test_models.py, matches this session's own later count),
+  explicitly left migration 006/010 untouched per its own commit
+  message. No action needed on it.
+- Migration 010's FIRST DRAFT (written before this decision came back)
+  used GENERATED ALWAYS ... STORED columns calling a STABLE SQL function
+  that queried collision.cost_entry. Applying it to staging failed for
+  real: "generation expression is not immutable" -- caught by actually
+  running it, not by review. Root cause: Postgres GENERATED columns
+  cannot reference another table under ANY circumstances (not a
+  volatility/STABLE-vs-IMMUTABLE issue, a hard structural restriction) --
+  a genuine design error in the first draft. Failed migration was
+  atomic/transactional; staging was left clean, no partial state.
+- REDESIGNED with the correct mechanism: an AFTER INSERT/UPDATE/DELETE
+  trigger on collision.cost_entry (SECURITY DEFINER, so it can write
+  columns collision_app itself cannot) that recalculates
+  labor_cost/direct_ro_costs on the owning job, PLUS revoking
+  collision_app's ability to write those two columns directly.
+- SECOND real bug, also caught by running the verify script rather than
+  assuming: a column-level REVOKE UPDATE (labor_cost, direct_ro_costs)
+  did NOT block collision_app, because collision_app already had a
+  TABLE-LEVEL UPDATE grant on collision.job (from migration 002/006) --
+  Postgres's column-level and table-level ACL entries are independent
+  and effectively OR'd; a column-level REVOKE cannot override a
+  table-level GRANT that already covers that column. Confirmed via
+  information_schema.column_privileges showing the grant still present
+  after the column-level REVOKE, and verify_010.sql's CHECK 4 failing
+  for a real reason. REAL FIX: REVOKE the table-wide UPDATE/INSERT
+  grants entirely, then re-GRANT at the column level for every column
+  EXCEPT labor_cost/direct_ro_costs -- the only way Postgres actually
+  supports "writable except these two columns."
+- After both fixes, verify_010.sql's all 7 checks genuinely pass against
+  fresh staging: new job starts 0/0, labor 'labor'-category insert
+  derives labor_cost, non-labor insert derives direct_ro_costs
+  (additive, correctly split), direct UPDATE of either column
+  genuinely rejected (both columns, tested separately), gross_revenue
+  (the OTHER column Jed said stays human-entered) still writable
+  proving the REVOKE is column-scoped not table-wide, and DELETE from
+  cost_entry correctly triggers a re-derivation downward.
+- APPLICATION-LAYER FIX, not optional -- migration 010's own header
+  flagged this and it was verified for real, not assumed: without a
+  matching code change, the app would break immediately.
+  app/repository.py's create_repair_order() previously INSERTed
+  labor_cost/direct_ro_costs directly -- removed both from the INSERT
+  entirely (new jobs start at DEFAULT 0/0). recalculate_costs_from_
+  entries() and api.py's /jobs/{ro}/costs/recalculate endpoint both
+  superseded (the trigger does their old job automatically) -- kept as
+  harmless no-op re-reads rather than deleted outright, to avoid
+  breaking an existing caller/route with no replacement. Fixed
+  test_api.py's test_recalculate_job_costs (was mocking behavior that no
+  longer exists). Fixed scripts/_smoke_repository.py's comment (was
+  describing app-side reconciliation that's now a DB trigger).
+- REAL DATA-LOSS RISK FOUND AND CLOSED, not just theoretical: app/
+  csv_import.py's import_jobs_csv() let a jobs.csv row specify
+  direct_ro_costs/labor_cost directly -- after migration 010, those
+  values would have been SILENTLY DROPPED (create_repair_order() simply
+  no longer accepts them, no error raised) rather than erroring loudly.
+  Fixed: any non-zero direct_ro_costs/labor_cost on a jobs.csv row is
+  now converted into an equivalent collision.cost_entry row at import
+  time (labor -> 'labor' category, direct_ro_costs -> 'other' category,
+  both source='csv_import', flagged in the description as a flat total
+  rather than a real itemized breakdown). Documented in the module's own
+  docstring; cost_entries.csv remains the recommended path for genuinely
+  itemized data going forward.
+- REAL END-TO-END VERIFICATION, not just unit tests with mocks: wrote
+  scripts/_smoke_010_app_layer.py -- runs the actual (fixed)
+  app.repository.create_repair_order()/app.csv_import.import_jobs_csv()
+  against real staging with SET ROLE collision_app active (collision_app
+  is NOLOGIN by design per migration 001, so this is the real access
+  pattern, not a direct connection). Confirmed for real: a new job via
+  create_repair_order() starts at 0/0; a real cost_entry insert derives
+  labor_cost correctly; a direct UPDATE attempt on labor_cost genuinely
+  fails even with the role active; a jobs.csv row with flat cost values
+  gets converted into 2 real cost_entry rows, not dropped, and the job's
+  derived totals match. Both test transactions rolled back cleanly --
+  0 rows persisted afterward, confirmed.
+- Full unit test suite re-run clean after every change: test_models.py
+  15/15, test_pdr_settlement.py 7/7, test_api.py 13/13 (35/35 total).
+- NOT YET PROMOTED TO PRODUCTION -- per Jed's explicit instruction
+  ("apply migration 010 to staging..., verify, and report back before
+  promoting to production as usual"). Holding for his go-ahead before
+  the next staging-reset-check-promote cycle.
+
+

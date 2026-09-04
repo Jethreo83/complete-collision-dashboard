@@ -38,7 +38,13 @@ def main():
         except ValueError as e:
             print(f"  correctly raised: {e}")
 
-        print("--- recalculate costs from cost_entry rows ---")
+        print("--- re-read costs (now trigger-derived, not app-reconciled) ---")
+        # NOTE (migration 010, 2026-09-06): recalculate_costs_from_entries()
+        # is now a no-op re-read -- labor_cost/direct_ro_costs are kept
+        # correct automatically by a DB trigger firing on every
+        # collision.cost_entry write (this script's earlier CSV import
+        # already caused those cost_entry INSERTs, so the values below
+        # were already correct before this call, not because of it).
         ro = repo.recalculate_costs_from_entries(cur, "RO-10001", "smoke_test")
         print(f"  labor_cost={ro.labor_cost} direct_ro_costs={ro.direct_ro_costs}")
         expected_labor = Decimal("455.00")

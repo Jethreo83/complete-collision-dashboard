@@ -163,9 +163,17 @@ def test_add_job_cost_negative_amount_returns_400():
 
 
 def test_recalculate_job_costs():
-    recalculated = _sample_ro(labor_cost=Decimal("455.00"), direct_ro_costs=Decimal("410.50"))
-    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
-         patch("app.api.repo.recalculate_costs_from_entries", return_value=recalculated):
+    """NOTE (migration 010, 2026-09-06): the /costs/recalculate endpoint
+    is now a harmless re-read, not an actual recalculation -- labor_cost/
+    direct_ro_costs are kept correct automatically by a DB trigger on
+    collision.cost_entry writes. The endpoint no longer calls
+    repo.recalculate_costs_from_entries() at all, so mocking that
+    function to return a different value than get_repair_order_by_ro_number
+    (as this test previously did) tests behavior that no longer exists.
+    Fixed to assert what the endpoint actually does now: return whatever
+    get_repair_order_by_ro_number() returns, unchanged."""
+    ro_with_current_derived_costs = _sample_ro(labor_cost=Decimal("455.00"), direct_ro_costs=Decimal("410.50"))
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=ro_with_current_derived_costs):
         r = client.post("/jobs/RO-10001/costs/recalculate", json={"actor": "jed"})
     check("test_recalculate_job_costs_status", r.status_code == 200, r.text)
     check("test_recalculate_job_costs_labor", r.json()["labor_cost"] == "455.00")

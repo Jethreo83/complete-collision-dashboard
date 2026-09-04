@@ -223,7 +223,19 @@ def add_job_cost(ro_number: str, body: CostEntryIn, cur=Depends(get_cursor)):
 
 @app.post("/jobs/{ro_number}/costs/recalculate", response_model=RepairOrderOut)
 def recalculate_job_costs(ro_number: str, body: RecalculateRequest, cur=Depends(get_cursor)):
-    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+    """NOTE (migration 010, 2026-09-06): this endpoint is now a no-op
+    that just re-reads the job -- there is nothing left to "recalculate"
+    on demand. labor_cost/direct_ro_costs are kept correct automatically
+    by a DB trigger firing on every collision.cost_entry write, per
+    Jed's cost-derivation decision (fully derived, not opt-in
+    reconciliation). Kept as a real endpoint rather than deleted outright
+    since removing an existing API route is more disruptive than making
+    it a harmless read -- any caller hitting it still gets the correct,
+    already-current job back. Candidate for actual removal once nothing
+    calls it anymore; not done in this session to avoid guessing whether
+    something already depends on this route existing.
+    """
+    ro = repo.get_repair_order_by_ro_number(cur, ro_number)
+    if ro is None:
         raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
-    ro = repo.recalculate_costs_from_entries(cur, ro_number, body.actor)
     return _ro_to_out(ro)
