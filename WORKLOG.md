@@ -137,3 +137,55 @@ Open, tracked separately (not blocking further Phase 1 work):
 
 Next up: collision.job (the RO tracker spine, per ADR-001 §5 build order
 item 5), same staging → verify → promote discipline.
+
+2026-09-04 (later, overnight — Jed stepped away, hermes gave standing
+instruction to keep building without stalling on him; asked hermes for
+the full overnight rule text since the message was truncated, proceeded
+in the meantime only on safe/reversible/non-external work per my own
+standing draft-and-hold + no-VLS-boundary rules)
+- Built migrations/002_collision_job.sql: collision.vehicle,
+  collision.job (the RO tracker spine, handoff §2.1-2.3), collision.
+  job_event (append-only transition log). job.category enum matches
+  pdr_settlement.py's ROCategory exactly (collision/pdr/hail); job's cost
+  fields (gross_revenue, direct_ro_costs, labor_cost,
+  rent_utility_share) match RepairOrder's field names by design so the
+  settlement calculator can read job rows directly once wired up.
+  job_status enum is the exact 11-state sequence from handoff §2.2/CC-2.
+- Explicit SIMPLIFICATION noted in the migration file itself: the handoff
+  says job transitions use "the same case_event engine as VLS/Elektrica,"
+  implying a VLS-style valid_next_states() trigger. I have not read VLS
+  migration SQL to copy that mechanism (out of scope per my standing
+  VLS-contact boundary, and Elektrica's own analogous table isn't built
+  yet either, so there's no already-promoted sibling to mirror). Built
+  job_event as a plain append-only log (enforced by grant shape — no
+  UPDATE/DELETE granted to collision_app — not a trigger) instead of
+  guessing at or reverse-engineering VLS's exact mechanism. Flagged as
+  not-yet-built in README rather than silently shipping a weaker
+  guarantee under the same name.
+- Wrote scripts/verify_002.sql (6 checks: job/vehicle field values
+  correct after insert, job_event log has both transitions in order,
+  collision_app can read/update job, collision_app can INSERT but not
+  UPDATE job_event, vehicle.vin uniqueness enforced, job.ro_number
+  uniqueness enforced).
+- Full cycle: re-applied migration 001 to staging first (staging had been
+  reset to a clean mirror of production after the earlier session, so it
+  no longer had the collision schema — confirmed by direct query before
+  reapplying, not assumed). Applied 002 to staging, ran verify_002.sql —
+  all 6 checks passed by real output (status transitioned
+  undecided -> estimate after the collision_app UPDATE, event_count=3
+  after the append test, all three uniqueness/append-only checks printed
+  their PASSED notice). Reset staging to a clean mirror of production
+  again. Queried production directly before promoting 002 (confirmed:
+  only collision.customer existed) and again immediately after (confirmed:
+  customer, job, job_event, vehicle all present) — promotion verified by
+  before/after query diff, not by trusting the commit message.
+- Tagged collision-migration-002, pushed tag and commit to
+  github.com/Jethreo83/complete-collision-dashboard.
+- Did NOT deploy anything externally, did not touch CCC ONE, did not
+  read VLS source, did not send anything to PDR Crew/CCC/customers —
+  stayed inside the "safe to keep building overnight" lane while hermes's
+  full rule text was still pending.
+
+Next up: collision.estimate (manual + webhook-proposal + AI-draft
+versions, per handoff §2.3/CC-4), staff auth/roles once Jed is back to
+answer the receptionist-permissions question.

@@ -4,7 +4,7 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 001, tag `collision-migration-001`)
+## Status (as of migration 002, tag `collision-migration-002`)
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -31,6 +31,18 @@ discipline as VLS and Elektrica: schema and core business logic first.
 - Applied to staging first, verified, staging reset to a clean mirror of
   production, then promoted to production and reconfirmed by direct query
   post-promotion. Tagged `collision-migration-001` on promotion.
+- **`collision.vehicle`, `collision.job`, `collision.job_event`**
+  (`migrations/002_collision_job.sql`) — the RO tracker spine (handoff
+  §2.1-2.3): job status state machine (`undecided` → ... → `marketing`,
+  per handoff §2.2/CC-2), job category enum matching `pdr_settlement.py`'s
+  `ROCategory` (collision/pdr/hail), cost fields (`gross_revenue`,
+  `direct_ro_costs`, `labor_cost`, `rent_utility_share`) that feed the
+  settlement calculator directly by field name, and an append-only
+  `job_event` transition log (append-only enforced by grant shape — no
+  UPDATE/DELETE granted to `collision_app` — not yet a VLS-style
+  `valid_next_states()` trigger; see the migration file's own
+  SIMPLIFICATION note on why). Applied and verified same staging → verify
+  → reset → promote discipline. Tagged `collision-migration-002`.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -66,8 +78,11 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
-- `collision.job` (RO tracker — the spine, per ADR-001 §5 build order item 5)
-- `collision.estimate` (manual + webhook-proposal + AI-draft versions)
+- `collision.estimate` (manual + webhook-proposal + AI-draft versions,
+  per handoff §2.3 and CC-4)
 - Staff auth/roles (owner/manager/receptionist), per ADR-001 §4
+- `valid_next_states()`-style transition enforcement on `collision.job`
+  (currently append-only log, no SQL-level state-machine constraint — see
+  migrations/002_collision_job.sql's SIMPLIFICATION note)
 - Content library migration, engagement-pull-back integration
 - Backend/API server, frontend
