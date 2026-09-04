@@ -1,0 +1,428 @@
+"""Repository layer — maps app.models dataclasses to/from the `collision`
+Postgres schema (migrations/001-006). All SQL lives here, parametrized
+(never string-interpolated), so app code above this layer never writes
+raw SQL.
+
+Every write function takes an explicit `actor` string for created_by /
+updated_by (matches every table's NOT NULL created_by column) — no
+"system" default is silently assumed, since these columns exist
+specifically to answer "which staff member/process did this" per the
+audit-trail discipline used throughout this schema (append-only
+job_event/estimate/cost_entry tables).
+
+See app/db.py's module docstring for the unresolved platform.person
+INSERT-grant/identity-service gap that affects create_customer_for_new_person().
+"""
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+
+from app.models import (
+    CostCategory,
+    CostEntry,
+    Customer,
+    Estimate,
+    EstimateSource,
+    JobCategory,
+    JobEvent,
+    JobStatus,
+    RepairOrder,
+    Site,
+    Vehicle,
+    VALID_COST_ENTRY_SOURCES,
+    VALID_CUSTOMER_SOURCES,
+    validate_transition,
+)
+
+
+# ---------------------------------------------------------------------------
+# Site
+# ---------------------------------------------------------------------------
+
+def get_or_create_site(cur, name: str, actor: str, address: Optional[str] = None) -> Site:
+    """Find-or-create by name — no guessed site names are ever inserted
+    ahead of a human providing one (ADR-001 §4 / migrations/006 header)."""
+    cur.execute("SELECT * FROM collision.site WHERE name = %s", (name,))
+    row = cur.fetchone()
+    if row:
+        return _site_from_row(row)
+    cur.execute(
+        """
+        INSERT INTO collision.site (name, address, created_by)
+        VALUES (%s, %s, %s)
+        RETURNING *
+        """,
+        (name, address, actor),
+    )
+    return _site_from_row(cur.fetchone())
+
+
+def _site_from_row(row) -> Site:
+    return Site(
+        id=row["id"], name=row["name"], address=row["address"],
+        active=row["active"], created_at=row["created_at"], created_by=row["created_by"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Customer
+# ---------------------------------------------------------------------------
+
+def get_customer_by_person_id(cur, person_id: int) -> Optional[Customer]:
+    cur.execute("SELECT * FROM collision.customer WHERE person_id = %s", (person_id,))
+    row = cur.fetchone()
+    return _customer_from_row(row) if row else None
+
+
+def create_customer_for_existing_person(
+    cur, person_id: int, actor: str, source: str = "walk_in",
+    elektrica_renter_ref: Optional[int] = None,
+) -> Customer:
+    """Link an ALREADY-EXISTING platform.person row to Complete Collision
+    as a customer. This is the only customer-creation path this module
+    fully supports without the platform.person INSERT-grant gap (see
+    app/db.py docstring) — the person must already exist (e.g. looked up
+    by email/phone against platform.person, or an Elektrica renter's
+    person_id from the cross-business link)."""
+    if source not in VALID_CUSTOMER_SOURCES:
+        raise ValueError(f"Unknown customer source {source!r}, expected one of {VALID_CUSTOMER_SOURCES}")
+    existing = get_customer_by_person_id(cur, person_id)
+    if existing:
+        return existing
+    cur.execute(
+        """
+        INSERT INTO collision.customer (person_id, source, elektrica_renter_ref, created_by)
+        VALUES (%s, %s, %s, %s)
+        RETURNING *
+        """,
+        (person_id, source, elektrica_renter_ref, actor),
+    )
+    return _customer_from_row(cur.fetchone())
+
+
+def create_person_and_customer(
+    cur, first_name: str, last_name: str, actor: str,
+    email: Optional[str] = None, phone: Optional[str] = None,
+    source: str = "walk_in",
+) -> Customer:
+    """Create a BRAND NEW platform.person row and link it as a Complete
+    Collision customer in one step.
+
+    *** REQUIRES A PRIVILEGED CONNECTION. *** collision_app has no INSERT
+    grant on platform.person (migrations/001, by design, mirroring
+    vls_app/elektrica_app — new-person creation is supposed to go through
+    a shared identity service this codebase has no access to or
+    knowledge of). This function will raise psycopg2.errors.
+    InsufficientPrivilege if run under the collision_app role, which is
+    the CORRECT behavior for an unresolved architecture gap, not a bug to
+    route around. It exists so CSV import / admin scripts run by a human
+    with a privileged (neondb_owner-class) connection can onboard a truly
+    new customer today, while the real fix (calling or replicating the
+    identity service's match-before-create flow) is an open question for
+    Jed — see README.md "Open questions".
+    """
+    email_normalized = email.strip().lower() if email else None
+    phone_normalized = phone.strip() if phone else None
+    cur.execute(
+        """
+        INSERT INTO platform.person (first_name, last_name, email_normalized, phone_normalized, created_by)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (first_name, last_name, email_normalized, phone_normalized, actor),
+    )
+    person_id = cur.fetchone()["id"]
+    return create_customer_for_existing_person(cur, person_id, actor, source=source)
+
+
+def _customer_from_row(row) -> Customer:
+    return Customer(
+        id=row["id"], person_id=row["person_id"], source=row["source"],
+        elektrica_renter_ref=row["elektrica_renter_ref"],
+        created_at=row["created_at"], created_by=row["created_by"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vehicle
+# ---------------------------------------------------------------------------
+
+def get_vehicle_by_vin(cur, vin: str) -> Optional[Vehicle]:
+    cur.execute("SELECT * FROM collision.vehicle WHERE vin = %s", (vin,))
+    row = cur.fetchone()
+    return _vehicle_from_row(row) if row else None
+
+
+def get_or_create_vehicle(
+    cur, customer_id: int, actor: str, vin: Optional[str] = None,
+    make: Optional[str] = None, model: Optional[str] = None, year: Optional[int] = None,
+) -> Vehicle:
+    """Find-or-create by VIN when a VIN is given (vin is UNIQUE in the
+    DB); always creates a new row when vin is None, since VIN-less
+    vehicles can't be deduplicated safely (matches the DB's nullable,
+    unique-when-present vin column)."""
+    if vin:
+        existing = get_vehicle_by_vin(cur, vin)
+        if existing:
+            return existing
+    cur.execute(
+        """
+        INSERT INTO collision.vehicle (vin, make, model, year, customer_id, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (vin, make, model, year, customer_id, actor),
+    )
+    return _vehicle_from_row(cur.fetchone())
+
+
+def get_vehicles_by_customer(cur, customer_id: int) -> list[Vehicle]:
+    cur.execute("SELECT * FROM collision.vehicle WHERE customer_id = %s ORDER BY id", (customer_id,))
+    return [_vehicle_from_row(r) for r in cur.fetchall()]
+
+
+def _vehicle_from_row(row) -> Vehicle:
+    return Vehicle(
+        id=row["id"], vin=row["vin"], make=row["make"], model=row["model"],
+        year=row["year"], customer_id=row["customer_id"],
+        created_at=row["created_at"], created_by=row["created_by"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# RepairOrder (collision.job)
+# ---------------------------------------------------------------------------
+
+def create_repair_order(cur, ro: RepairOrder, actor: str) -> RepairOrder:
+    cur.execute(
+        """
+        INSERT INTO collision.job (
+            ro_number, vehicle_id, customer_id, site_id, category, status,
+            claim_number, insurer, adjuster_name, posture,
+            gross_revenue, direct_ro_costs, labor_cost, rent_utility_share,
+            created_by, updated_by
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s
+        ) RETURNING *
+        """,
+        (
+            ro.ro_number, ro.vehicle_id, ro.customer_id, ro.site_id,
+            ro.category.value, ro.status.value,
+            ro.claim_number, ro.insurer, ro.adjuster_name, ro.posture,
+            ro.gross_revenue, ro.direct_ro_costs, ro.labor_cost, ro.rent_utility_share,
+            actor, actor,
+        ),
+    )
+    row = cur.fetchone()
+    # First job_event: creation, from_status NULL.
+    cur.execute(
+        """
+        INSERT INTO collision.job_event (job_id, from_status, to_status, created_by, note)
+        VALUES (%s, NULL, %s, %s, %s)
+        """,
+        (row["id"], ro.status.value, actor, "job created"),
+    )
+    return _repair_order_from_row(row)
+
+
+def get_repair_order_by_ro_number(cur, ro_number: str) -> Optional[RepairOrder]:
+    cur.execute("SELECT * FROM collision.job WHERE ro_number = %s", (ro_number,))
+    row = cur.fetchone()
+    return _repair_order_from_row(row) if row else None
+
+
+def transition_job_status(
+    cur, ro_number: str, target: JobStatus, actor: str, note: Optional[str] = None,
+) -> RepairOrder:
+    """Validate (app-layer, per migrations/002's SIMPLIFICATION note —
+    no DB trigger exists yet) then apply a status transition, recording a
+    JobEvent. Raises ValueError on an illegal transition before touching
+    the DB."""
+    current = get_repair_order_by_ro_number(cur, ro_number)
+    if current is None:
+        raise ValueError(f"No job with ro_number={ro_number!r}")
+    validate_transition(current.status, target)
+    cur.execute(
+        """
+        UPDATE collision.job SET status = %s, updated_at = now(), updated_by = %s
+        WHERE ro_number = %s
+        RETURNING *
+        """,
+        (target.value, actor, ro_number),
+    )
+    row = cur.fetchone()
+    cur.execute(
+        """
+        INSERT INTO collision.job_event (job_id, from_status, to_status, created_by, note)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (row["id"], current.status.value, target.value, actor, note),
+    )
+    return _repair_order_from_row(row)
+
+
+def list_job_events(cur, ro_number: str) -> list[JobEvent]:
+    cur.execute(
+        """
+        SELECT je.* FROM collision.job_event je
+        JOIN collision.job j ON j.id = je.job_id
+        WHERE j.ro_number = %s
+        ORDER BY je.occurred_at
+        """,
+        (ro_number,),
+    )
+    return [_job_event_from_row(r) for r in cur.fetchall()]
+
+
+def _repair_order_from_row(row) -> RepairOrder:
+    return RepairOrder(
+        id=row["id"], ro_number=row["ro_number"], vehicle_id=row["vehicle_id"],
+        customer_id=row["customer_id"], site_id=row["site_id"],
+        category=JobCategory(row["category"]), status=JobStatus(row["status"]),
+        claim_number=row["claim_number"], insurer=row["insurer"],
+        adjuster_name=row["adjuster_name"], posture=row["posture"],
+        gross_revenue=row["gross_revenue"], direct_ro_costs=row["direct_ro_costs"],
+        labor_cost=row["labor_cost"], rent_utility_share=row["rent_utility_share"],
+        ccc_one_last_reconciled_at=row["ccc_one_last_reconciled_at"],
+        opened_at=row["opened_at"], closed_at=row["closed_at"], collected_at=row["collected_at"],
+        created_at=row["created_at"], updated_at=row["updated_at"],
+        created_by=row["created_by"], updated_by=row["updated_by"],
+    )
+
+
+def _job_event_from_row(row) -> JobEvent:
+    return JobEvent(
+        id=row["id"], job_id=row["job_id"],
+        from_status=JobStatus(row["from_status"]) if row["from_status"] else None,
+        to_status=JobStatus(row["to_status"]), occurred_at=row["occurred_at"],
+        created_by=row["created_by"], note=row["note"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# CostEntry — itemized ledger
+# ---------------------------------------------------------------------------
+
+def add_cost_entry(cur, entry: CostEntry, actor: str) -> CostEntry:
+    if entry.source not in VALID_COST_ENTRY_SOURCES:
+        raise ValueError(f"Unknown cost entry source {entry.source!r}, expected one of {VALID_COST_ENTRY_SOURCES}")
+    if entry.amount < 0:
+        raise ValueError("cost_entry amount must be >= 0 (DB CHECK constraint mirrors this)")
+    cur.execute(
+        """
+        INSERT INTO collision.cost_entry (
+            job_id, category, description, amount, incurred_at, source, source_file, created_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            entry.job_id, entry.category.value, entry.description, entry.amount,
+            entry.incurred_at or date.today(), entry.source, entry.source_file, actor,
+        ),
+    )
+    return _cost_entry_from_row(cur.fetchone())
+
+
+def list_cost_entries(cur, ro_number: str) -> list[CostEntry]:
+    cur.execute(
+        """
+        SELECT ce.* FROM collision.cost_entry ce
+        JOIN collision.job j ON j.id = ce.job_id
+        WHERE j.ro_number = %s
+        ORDER BY ce.incurred_at, ce.id
+        """,
+        (ro_number,),
+    )
+    return [_cost_entry_from_row(r) for r in cur.fetchall()]
+
+
+def recalculate_costs_from_entries(cur, ro_number: str, actor: str) -> RepairOrder:
+    """Explicit, opt-in reconciliation of collision.job's flat cost
+    columns from itemized collision.cost_entry rows — NOT an automatic
+    trigger (see migrations/006 header for why: avoids silently
+    overwriting a manually-entered aggregate with a possibly incomplete
+    itemized total).
+
+    Mapping (this bot's own reasonable convention, not sourced from a
+    document — flag to Jed if wrong):
+      labor_cost      = sum of category='labor' entries
+      direct_ro_costs = sum of all OTHER categories (parts, paint_materials,
+                         sublet, rental_reimbursement, other)
+      rent_utility_share is NOT touched — it's a fixed shop-overhead
+      allocation per RO, not an itemized line item in cost_entry's
+      category set, so there's nothing to sum it from.
+    """
+    entries = list_cost_entries(cur, ro_number)
+    labor_total = sum((e.amount for e in entries if e.category == CostCategory.LABOR), Decimal("0"))
+    other_total = sum((e.amount for e in entries if e.category != CostCategory.LABOR), Decimal("0"))
+    cur.execute(
+        """
+        UPDATE collision.job
+        SET labor_cost = %s, direct_ro_costs = %s, updated_at = now(), updated_by = %s
+        WHERE ro_number = %s
+        RETURNING *
+        """,
+        (labor_total, other_total, actor, ro_number),
+    )
+    return _repair_order_from_row(cur.fetchone())
+
+
+def _cost_entry_from_row(row) -> CostEntry:
+    return CostEntry(
+        id=row["id"], job_id=row["job_id"], category=CostCategory(row["category"]),
+        description=row["description"], amount=row["amount"], incurred_at=row["incurred_at"],
+        source=row["source"], source_file=row["source_file"],
+        created_at=row["created_at"], created_by=row["created_by"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Estimate
+# ---------------------------------------------------------------------------
+
+def create_manual_estimate(cur, job_id: int, content: dict, actor: str) -> Estimate:
+    """Phase 1 only writes source=MANUAL, confirmed at creation (per the
+    DB's CHECK constraint and Estimate.__post_init__ mirroring it)."""
+    cur.execute(
+        "SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM collision.estimate WHERE job_id = %s",
+        (job_id,),
+    )
+    next_version = cur.fetchone()["next_version"]
+    now = datetime.now()
+    estimate = Estimate(
+        job_id=job_id, version=next_version, source=EstimateSource.MANUAL,
+        draft_content=content, confirmed_content=content, confirmed_by=actor, confirmed_at=now,
+    )
+    cur.execute(
+        """
+        INSERT INTO collision.estimate (
+            job_id, version, source, draft_content, confirmed_content, confirmed_by, confirmed_at, created_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            job_id, next_version, EstimateSource.MANUAL.value,
+            psycopg2_json(content), psycopg2_json(content), actor, now, actor,
+        ),
+    )
+    return _estimate_from_row(cur.fetchone())
+
+
+def psycopg2_json(d: dict):
+    import json
+    import psycopg2.extras
+    return psycopg2.extras.Json(d) if d is not None else None
+
+
+def _estimate_from_row(row) -> Estimate:
+    return Estimate(
+        id=row["id"], job_id=row["job_id"], version=row["version"],
+        source=EstimateSource(row["source"]), draft_content=row["draft_content"],
+        confirmed_content=row["confirmed_content"], confirmed_by=row["confirmed_by"],
+        confirmed_at=row["confirmed_at"], created_at=row["created_at"], created_by=row["created_by"],
+    )

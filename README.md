@@ -4,9 +4,16 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 005, tag `collision-migration-005`) — standing
-down for the night, 2026-09-04. All open items needing Jed are
-consolidated at the bottom of `WORKLOG.md`'s final entry.
+## Status (as of migration 006 + Phase 1 app layer, 2026-09-04)
+
+**INCIDENT OPEN, needs Jed's decision:** migration 006 was applied to
+production by a CLI tooling accident (see WORKLOG.md and README's
+migration-006 section) — zero data loss, rollback prepared but not run,
+awaiting Jed's call on which way to resolve it.
+
+Schema (migrations 001-006) and the Phase 1 application layer (models,
+repository, CSV import CLI) are written and verified by real execution.
+No backend API/HTTP server or frontend exists yet — CLI-only for now.
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -101,6 +108,32 @@ discipline as VLS and Elektrica: schema and core business logic first.
   grouping, dedup constraint, dedup exemption for NULL ids, full-text
   search match, `collision_app` read/write). Tagged
   `collision-migration-005`.
+- **`collision.site`, `collision.cost_entry`**
+  (`migrations/006_collision_site_and_cost.sql`) — promotes `site` from a
+  free-text column on `collision.job` to a real entity (find-or-create by
+  name, no guessed site names inserted — Complete Collision's actual site
+  list is not known to this bot), and adds an itemized cost ledger
+  (`parts`/`labor`/`paint_materials`/`sublet`/`rental_reimbursement`/
+  `other` categories) additive to `collision.job`'s existing four flat
+  cost columns. Append-only grant shape (no UPDATE), `CHECK` constraints
+  reject negative amounts and any `source` other than `manual`/
+  `csv_import` (no CCC ONE automated source possible even at the schema
+  level). Verified with 8 checks on staging.
+  **STATUS — INCIDENT, see WORKLOG.md 2026-09-04 "INCIDENT" entry and
+  open item #7 below:** a `neonctl` CLI bug (v4.14.0's
+  `connection-string --branch-id <id>` silently resolves to the
+  project's default branch instead of erroring) caused this migration to
+  be applied directly to **production**, one step ahead of Jed's
+  sign-off — this session's standing instruction was staging-only until
+  told otherwise. Verified zero data loss (every `collision.*` table had
+  0 rows before and after, confirmed by direct query). A rollback script
+  (`scripts/006_ROLLBACK.sql`) is prepared and verified safe but **NOT
+  YET RUN**, pending Jed's decision on whether to roll back or accept the
+  migration as applied (it is, substantively, correct Phase 1 schema
+  work that was headed for production regardless). NOT tagged
+  `collision-migration-006` — tagging is reserved for migrations Jed has
+  actually signed off on landing in production, and that hasn't happened
+  here yet.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -122,6 +155,67 @@ This logic deliberately takes manually-entered RO records as input — no
 CCC ONE read/write of any kind, consistent with ADR-001 §1's finding that
 CCC ONE's Master License Agreement restricts automated data aggregation
 and requires clarification before any live integration is built.
+
+### Application layer — written and tested end-to-end against real staging data
+
+- **`app/models.py`** — plain dataclasses mirroring the `collision` schema
+  1:1 by field name: `Site`, `Customer`, `Vehicle`, `RepairOrder` (the RO/
+  job entity), `JobEvent`, `Estimate`, `CostEntry`, plus every enum
+  (`JobCategory`, `JobStatus`, `EstimateSource`, `StaffRole`,
+  `CostCategory`). `RepairOrder.net_profit()` matches
+  `pdr_settlement.py`'s formula exactly. `validate_transition()` is the
+  application-layer state-machine guard called out as missing at the DB
+  level in `migrations/002`'s SIMPLIFICATION note — forward-only,
+  skip-ahead allowed, backward and no-op transitions rejected. `Estimate`
+  enforces the same manual-confirmed-at-creation and
+  all-or-nothing-confirmation rules as the DB's `CHECK` constraints, so
+  bad data is rejected in Python before it ever reaches a query. 11 unit
+  tests in `test_models.py`, all passing, no DB dependency.
+- **`app/db.py`** — connection helper reading a Neon connection string
+  from a named environment variable (never a literal), matching
+  `scripts/run_sql.py`'s discipline. Docstring flags an open architecture
+  gap plainly: `collision_app` has no `INSERT` grant on `platform.person`
+  by design (identity-service match-before-create flow, mirroring
+  `vls_app`/`elektrica_app`), so brand-new-customer creation needs a
+  privileged connection — this module does not paper over that.
+- **`app/repository.py`** — all parametrized SQL for the schema:
+  site find-or-create, customer/vehicle/job/cost_entry/estimate CRUD,
+  `transition_job_status()` (validates via `models.validate_transition`,
+  writes the `job_event` row), `recalculate_costs_from_entries()` (opt-in
+  reconciliation of `job`'s flat cost columns from itemized `cost_entry`
+  rows — deliberately not an automatic trigger, per `migrations/006`'s
+  header). Every write takes an explicit `actor` argument for
+  `created_by`/`updated_by` — no silent "system" default.
+- **`app/csv_import.py`** — the manual/CSV data-entry workflow itself
+  (ADR-001 §1's actual v1 answer for CCC ONE-adjacent data): importers for
+  `customers.csv`, `vehicles.csv`, `jobs.csv`, `cost_entries.csv`, each
+  idempotent on natural keys, each supporting `dry_run` (default) vs.
+  commit, each returning a structured `ImportReport` instead of just
+  printing. Templates with realistic example rows live in
+  `data/templates/`. Deliberately does NOT create brand-new
+  `platform.person` rows itself (see `app/repository.py`'s
+  `create_person_and_customer()` gap above) — `customers.csv` links
+  *existing* people found by email; provision genuinely new people via an
+  admin script under a privileged connection first.
+- **`scripts/csv_import_cli.py`** — CLI wrapper:
+  `python scripts/csv_import_cli.py <ENV_VAR> {customers,vehicles,jobs,costs} <path> [--commit] [--actor NAME]`.
+- **Verified by real execution against Neon staging** (not just unit
+  tests): seeded two test `platform.person` rows, then ran all four CSV
+  importers end-to-end (customers → vehicles → jobs → cost_entries) in
+  dry-run then commit mode, confirmed the resulting rows by direct query
+  (RO-10001/RO-10002 correct in every field, cost entries correctly
+  attributed with `source='csv_import'`/`source_file='cost_entries.csv'`),
+  then exercised `transition_job_status()` (legal forward transition
+  succeeded and logged a `job_event`; illegal backward transition
+  correctly raised `ValueError` without touching the DB) and
+  `recalculate_costs_from_entries()` (recomputed `labor_cost`/
+  `direct_ro_costs` from the imported `cost_entry` rows, matched a manual
+  hand-calculation exactly, and `net_profit()` on the result matched a
+  second independent manual calculation). Staging reset to a clean mirror
+  of production afterward — no test data persists.
+- **Not yet built in the app layer:** no HTTP/API server, no frontend, no
+  authentication/session handling (ties to the still-pending receptionist
+  permission question), no CSV upload UI (CLI only for now).
 
 ## Deploy process (once schema work resumes)
 

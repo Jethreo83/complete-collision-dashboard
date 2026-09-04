@@ -409,6 +409,116 @@ category if further building is wanted before Jed's back.
 - No CCC ONE contact, no external deploys, nothing sent to PDR Crew/CCC/
   customers, no VLS source access, at any point tonight.
 
+2026-09-04 (Phase 1 build session — INCIDENT: unintended production write)
+
+Session start: Jed approved ADR-001 and instructed "Begin Phase 1
+implementation now" — project structure, core data models (Site,
+RepairOrder, Customer, Vehicle, cost tracking), manual/CSV workflows.
+Explicit constraint given this session: "do not run destructive migrations
+or write to production without explicit written instruction from Jed —
+staging only unless told otherwise."
+
+- Reviewed all existing docs (ADR-001, handoff, WORKLOG, README,
+  elektrica-dashboard-ref for pattern conventions) before writing anything.
+- Confirmed staging branch (br-broad-hat-a5uyz6he) state via
+  `scripts/check_state.sql`: mirrored production (migrations 001-005,
+  0 rows everywhere), consistent with prior session's stand-down note.
+- Wrote `migrations/006_collision_site_and_cost.sql`: promotes `site` from
+  a free-text column on collision.job to a real `collision.site` entity
+  (find-or-create, no guessed site names inserted), and adds
+  `collision.cost_entry` as an itemized cost ledger (parts/labor/
+  paint_materials/sublet/rental_reimbursement/other categories,
+  append-only grant shape, CHECK constraints rejecting negative amounts
+  and any source other than 'manual'/'csv_import' — no CCC ONE automated
+  source possible even at the schema level). Explicitly flagged in the
+  migration header as needing Jed's sign-off before promotion, since it
+  drops a column that exists live in production (even though production
+  has 0 job rows).
+- Wrote `scripts/verify_006.sql` (8 checks).
+- **INCIDENT:** Captured what I believed was the STAGING connection string
+  via `neonctl connection-string --project-id ... --branch-id
+  br-broad-hat-a5uyz6he ...` into an env var named `CC_STAGING_DB_URL`,
+  intending staging-only work per this session's explicit instruction.
+  Applied migration 006 against that connection — COMMITTED successfully.
+  Ran verify_006.sql against the same connection — failed partway through
+  (unrelated bug: ambiguous `category` column reference in CHECK 4's
+  SELECT, collision.job and collision.cost_entry both have a `category`
+  column) before reaching any COMMIT, so no test rows persisted.
+  **Root cause, found during a routine "reset staging clean" step:**
+  neonctl v4.14.0's `connection-string` command silently ignores
+  `--branch-id <id>` (and `--branch <id>`) and falls back to the
+  project's default branch (production) when the branch is specified by
+  ID rather than by name — it only respects the branch name passed as a
+  positional argument (`neonctl connection-string staging`, not
+  `--branch-id br-broad-hat-...`). Confirmed by direct comparison: both
+  `--branch-id br-broad-hat-a5uyz6he` and `--branch-id
+  br-dawn-resonance-a5xfpgqv` (production's real ID) resolved to the SAME
+  host (`ep-damp-bird-a5vtcqmv...`, confirmed = production's real
+  endpoint by cross-checking with the positional `production` argument).
+  The positional-argument form (`neonctl connection-string staging` /
+  `neonctl connection-string production`) resolves correctly to two
+  DIFFERENT hosts (`ep-bold-leaf-a5dr4amg` for staging,
+  `ep-damp-bird-a5vtcqmv` for production).
+  **Effect: migration 006 was applied to PRODUCTION, not staging, without
+  Jed's explicit sign-off — a direct violation of this session's
+  standing instruction, caused by a CLI flag silently degrading instead
+  of erroring.**
+- **Impact assessment, verified by direct query (not assumed):**
+  - Schema-only. Production's collision.customer/vehicle/job/job_event/
+    estimate/staff_user/content_item tables had 0 rows before this
+    incident (confirmed — last known state was migration-005 stand-down,
+    0 rows) and still have 0 rows after (confirmed by
+    `scripts/_diag_rowcounts.sql` run directly against production
+    post-incident: every collision.* table, including the new site and
+    cost_entry tables, shows count=0).
+  - No test/dummy data persisted anywhere: verify_006.sql's INSERT
+    statements ran inside a single `DO $$ ... $$` block that failed
+    (via a later, unrelated statement in the same script file, executed
+    in its own statement/transaction by run_sql.py) before any explicit
+    COMMIT of that batch — the runner's `except: conn.rollback()` fired,
+    discarding the test inserts. Confirmed empirically, not just by
+    reading the code: row counts are 0 across the board.
+  - No customer, vehicle, financial, or webhook data was touched. Nothing
+    sent externally. No VLS data read or touched (production's `vls`
+    schema was not queried by anything in this incident).
+  - The change itself: `collision.job.site` (TEXT) replaced with
+    `site_id` (FK to new `collision.site` table); new `collision.site`
+    and `collision.cost_entry` tables added. This is exactly the schema
+    change migration 006 was designed to make — just applied to the wrong
+    branch, one step ahead of Jed's sign-off on a production-affecting
+    change.
+- **Remediation prepared, NOT YET EXECUTED:** wrote
+  `scripts/006_ROLLBACK.sql`, a verified-safe (0 rows at risk) script that
+  restores production's collision schema to exactly its
+  migration-005/collision-migration-005-tagged shape (drops cost_entry,
+  cost_category, job.site_id, collision.site; restores job.site as a
+  plain NOT NULL TEXT column with its original index). Held rather than
+  run: executing this rollback is ITSELF a production write, and this
+  session's standing instruction is "no production writes without Jed's
+  explicit written instruction" — having already broken that rule once
+  by tooling accident, compounding it with a second unilateral production
+  write (even a corrective one) is not the right call. Asking Jed
+  directly instead: (a) run the prepared rollback to restore production
+  to exactly the Jed-approved migration-005 state, or (b) leave migration
+  006 applied to production as-is, since it is schema-only, zero data
+  loss, and is work that was headed for production anyway as part of
+  approved Phase 1 scope — just without the staging-first verification
+  step being genuinely staging this one time.
+- **Process fix adopted immediately, going forward:** every neonctl
+  connection-string invocation for this project now uses the branch NAME
+  as a positional argument (`neonctl connection-string staging` /
+  `neonctl connection-string production`), never `--branch-id`. Verified
+  this resolves to two different hosts before trusting it again.
+  Re-verified staging's actual state with the corrected command
+  immediately after discovering the bug (confirmed: migrations 001-006
+  present, matching what should have been staging-only — meaning
+  staging and production are now, coincidentally, in the same
+  post-006 schema state, which simplifies reconciliation).
+- Did not deploy anything externally, did not send anything to
+  PDR Crew/CCC/customers, did not touch CCC ONE, did not read VLS source
+  or data, did not touch any row of real customer/financial data (none
+  exists yet).
+
 All open items for Jed, consolidated:
 1. Which CCC ONE data-sharing mechanism (EMS Extract/Secure Share/DMS
    Interface/CCC Indicators) is actually licensed on the account (ADR-001
@@ -424,4 +534,10 @@ All open items for Jed, consolidated:
 6. kay-successor's report on the 4 cccone_logs webhook payloads' actual
    contents (asked 2026-09-04, not yet received — separate from tonight's
    schema work, tracked but not blocking it).
+7. **NEW, urgent:** decide remediation for the 2026-09-04 incident above —
+   migration 006 (collision.site + collision.cost_entry, job.site ->
+   site_id) landed on PRODUCTION by tooling accident, one step ahead of
+   sign-off. Confirmed zero data loss (0 rows before/after). Run the
+   prepared `scripts/006_ROLLBACK.sql` to restore exactly the
+   migration-005 state, or approve leaving migration 006 as applied?
 

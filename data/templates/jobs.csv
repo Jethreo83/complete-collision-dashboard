@@ -1,0 +1,3 @@
+ro_number,customer_email,vin,site,category,status,claim_number,insurer,adjuster_name,posture,gross_revenue,direct_ro_costs,labor_cost,rent_utility_share
+RO-10001,jane.doe@example.com,1HGCM82633A004352,South,collision,estimate,CLM-88213,Progressive,Alex Rivera,paying,8500.00,1200.00,900.00,150.00
+RO-10002,john.smith@example.com,,South,pdr,came_in,,,,,,,,
