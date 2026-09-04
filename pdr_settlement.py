@@ -28,7 +28,18 @@ module produces the draft only, it does not send anything. ***
 (bracketed terms) per ADR-001 §7 open question #5 — Jed has not yet said
 whether to build against current draft terms or wait for signature. This
 module implements the draft terms as-is so the math can be validated now;
-if Jed decides to wait, this stays unused until he says otherwise. ***
+
+*** SHARED CONVENTIONS NOTE (per docs/SHARED_CONVENTIONS_NOTE.md,
+convention #2 -- one shared document generator for the whole system):
+this module is pure computation, NOT document rendering, so it does not
+violate the "no project builds its own document generator" rule --
+confirmed directly with Jed/hermes 2026-09-04. format_statement()'s
+plain-text output below is a draft-review artifact for Jed, not a
+rendered PDF. If/when a real PDF settlement statement is needed, THAT
+step must call the shared document generator once it exists -- do not
+add PDF rendering or a parallel document pipeline to this module.
+If Jed decides to wait [on the PDR Crew agreement signature], this
+computation stays unused until he says otherwise. ***
 """
 
 from __future__ import annotations

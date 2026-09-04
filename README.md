@@ -3,6 +3,11 @@
 Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
+See `docs/SHARED_CONVENTIONS_NOTE.md` for six cross-project conventions
+(person registry, document generator, state-machine event pattern,
+comms primitive, payments shape, bot interface) every locked domain bot
+(VLS/Elektrica/Complete Collision) builds against — read before any new
+schema/primitive decision.
 
 ## Status (as of migrations 001-005, 007, 008 in production; migration
 006 staging-only pending Jed's review, 2026-09-04)
@@ -277,9 +282,34 @@ and requires clarification before any live integration is built.
   hand-calculation exactly, and `net_profit()` on the result matched a
   second independent manual calculation). Staging reset to a clean mirror
   of production afterward — no test data persists.
-- **Not yet built in the app layer:** no HTTP/API server, no frontend, no
-  authentication/session handling (ties to the still-pending receptionist
-  permission question), no CSV upload UI (CLI only for now).
+- **`app/api.py`** — thin FastAPI wrapper over `app/repository.py`:
+  `GET /jobs/{ro_number}`, `GET /jobs/{ro_number}/events`,
+  `POST /jobs/{ro_number}/transition`, `GET`/`POST /jobs/{ro_number}/costs`,
+  `POST /jobs/{ro_number}/costs/recalculate`, `GET /health`. Deliberately
+  **unauthenticated** — no session/identity mechanism exists yet to check
+  against `collision.staff_user_capability()` (migrations/007), so a
+  route-guard now would guess at unbuilt architecture rather than enforce
+  a real decision (same reasoning as migrations/007's own header).
+  **Not deployed, not exposed externally, not started automatically by
+  anything in this repo** — run locally only, on demand, via
+  `uvicorn app.api:app --reload --port 8000`, until Jed approves an actual
+  deploy. Connection string comes from `COLLISION_DB_ENV_VAR` (default
+  `DATABASE_URL`), read once per request via `app/db.py`'s existing
+  `cursor()` helper — no new connection-handling code, no hardcoded
+  literals. `test_api.py` — 13 tests, all repository calls mocked (no DB
+  dependency), covering every route's happy path, 404s, and validation
+  errors (illegal status transition, unknown status/category value,
+  negative cost amount). Also verified by **real execution**: started the
+  actual `uvicorn` process locally, hit `/health` (200), a real
+  nonexistent-RO lookup through the live DB connection (404, read-only,
+  touched 0 rows — matches production's confirmed 0-job-rows state), and
+  `/docs` (200, FastAPI's auto-generated OpenAPI UI) before shutting the
+  process down. Not left running.
+- **Not yet built in the app layer:** no frontend, no authentication/
+  session handling (ties to the still-pending receptionist permission
+  question — see `app/api.py`'s header for why route-guards aren't wired
+  yet even though DB-level capability enforcement already exists), no CSV
+  upload UI (CLI only for now).
 
 ## Deploy process (once schema work resumes)
 

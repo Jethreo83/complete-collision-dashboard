@@ -692,4 +692,75 @@ Updated open items for Jed:
   anything to PDR Crew/CCC/customers, did not read VLS source, did not
   touch migration 006's undecided design question.
 
+2026-09-04 (Jed's shared conventions — cross-project engineering
+standard, six primitives)
+- hermes relayed that Jed sent SHARED_CONVENTIONS.md's location
+  (vls-dashboard/docs/SHARED_CONVENTIONS.md) — six shared primitives
+  every locked domain bot (VLS/Elektrica/Complete Collision) builds
+  against rather than reinventing. Tried to read it myself first rather
+  than act on a summary alone: the repo is private (confirmed —
+  github.com/Jethreo83/vls-dashboard 404s publicly, GitHub API returns
+  Not Found unauthenticated). Deliberately did NOT try to work around
+  this (clone the repo, request broader credentials) — reading one
+  engineering doc Jed pointed me at is not the same as him lifting the
+  general "no relationship to VLS" boundary, and solving my own access
+  gap by going around it would have been a much bigger boundary crossing
+  than the problem it solved. Asked hermes to paste the raw content
+  directly instead.
+- hermes pasted the full text. Six conventions: (1) platform.person
+  thin, each project owns its own party table+RLS — collision.customer
+  already matches. (2) ONE shared document generator
+  ((template_id, template_version, merge_data, attachments[]) -> PDF +
+  generation_log_row), no project builds its own. (3) one append-only
+  case_event state-machine pattern, JP logic lives once in VLS, reused
+  not forked — not directly relevant to Collision unless litigation
+  state is ever needed; collision.job_event is its own domain's version
+  of the same pattern family, not a fork of VLS's JP logic. (4) one
+  inbound-match-then-propose comms primitive, never auto-file — matches
+  this project's existing CCC ONE webhook caution (ADR-001 §2) exactly.
+  (5) one payments table shape, accounting_sync_ref reserved. (6) bot
+  writes only via scoped API key to proposal endpoints, propose-then-
+  confirm.
+- Flagged a real, immediate conflict before assuming either resolution:
+  pdr_settlement.py already computes AND formats a draft statement —
+  does convention #2 mean it needs to be torn out and routed through
+  "the" shared generator, or is pure computation exempt? Asked rather
+  than guessed either direction.
+- **Resolved directly by hermes:** pdr_settlement.py does NOT violate
+  convention #2 — it's pure computation (profit-split formula producing
+  numbers), not document rendering, same category as
+  vls.settlement_breakdown. format_statement()'s plain-text output is a
+  draft-review artifact, not a rendered PDF. If/when Complete Collision
+  needs an actual PDF settlement statement, THAT step calls the shared
+  generator once it exists; the computation stays here. Keep
+  pdr_settlement.py exactly as it is.
+- Also relayed and binding for later: the marketing/posting-engine
+  convention (Phase 2) is "promote Collision's existing posting engine
+  (Kay's server.py) into a shared service, don't rebuild it" — applies
+  whenever this project's content-library work reaches Phase 2.
+  Financials and brain-console dashboards remain Phase 2 hold
+  regardless.
+- Wrote docs/SHARED_CONVENTIONS_NOTE.md in this repo (the paraphrased/
+  relayed content, since the source is a private repo this bot can't
+  link to directly) so the conventions are discoverable locally by
+  anyone reading this repo, not just recoverable from chat history.
+  Cross-referenced from README.md's top section.
+- Updated pdr_settlement.py's own module docstring with the resolution
+  (convention #2 doesn't apply, why, and the explicit boundary: no PDF
+  rendering or parallel document pipeline should ever be added to this
+  module). Caught and fixed an editing artifact (an orphaned trailing
+  sentence fragment left over from a prior paragraph) before committing
+  — re-read the file after the edit rather than trusting the patch tool
+  applied cleanly. Ran test_pdr_settlement.py after the docstring edit:
+  7/7 still passed, confirming the comment-only change didn't break
+  anything.
+- Checked git log/fetch for concurrent activity before starting (per
+  the now-standing practice) — clean, no new commits.
+- Did not build anything new against these conventions yet — this
+  session was reading/recording/resolving the conflict, not new schema
+  work. Next schema/primitive decision (e.g. the eventual payments
+  table, or the CCC ONE webhook's inbound-match-then-propose wiring)
+  should reference docs/SHARED_CONVENTIONS_NOTE.md explicitly.
+
+
 
