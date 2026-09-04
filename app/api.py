@@ -95,6 +95,21 @@ class TransitionRequest(BaseModel):
     note: Optional[str] = None
 
 
+class JobIntakeUpdateRequest(BaseModel):
+    """PATCH body for update_job_intake_fields() (2026-09-06 WORKLOG
+    "Next up" item #1). All fields optional -- a field simply absent from
+    the JSON body means "leave unchanged"; a field explicitly present with
+    a JSON `null` means "clear it to NULL". FastAPI/pydantic distinguish
+    those two cases via `.dict(exclude_unset=True)` in the route below, not
+    via this schema's defaults alone -- see the route for how the
+    exclude_unset dict is translated into repo._UNSET sentinels."""
+    claim_number: Optional[str] = None
+    insurer: Optional[str] = None
+    adjuster_name: Optional[str] = None
+    posture: Optional[str] = None
+    actor: str
+
+
 class CostEntryOut(BaseModel):
     id: int
     job_id: int
@@ -254,6 +269,34 @@ def transition_job(ro_number: str, body: TransitionRequest, cur=Depends(get_curs
         ro = repo.transition_job_status(cur, ro_number, target, body.actor, note=body.note)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return _ro_to_out(ro)
+
+
+@app.patch("/jobs/{ro_number}", response_model=RepairOrderOut)
+def patch_job_intake_fields(ro_number: str, body: JobIntakeUpdateRequest, cur=Depends(get_cursor)):
+    """Revise intake-time fields (claim_number/insurer/adjuster_name/
+    posture) after creation -- closes the gap flagged in the prior
+    cycle's WORKLOG (these were write-once at create_repair_order() time).
+    Does not touch status (use POST .../transition) or any cost/revenue
+    column (write-once or DB-trigger-derived, see repo.create_repair_order
+    and repo.update_job_intake_fields docstrings).
+
+    exclude_unset=True is the whole point of this route: a field simply
+    absent from the request body must NOT overwrite existing data with
+    NULL, but a field explicitly sent as JSON `null` (e.g.
+    {"adjuster_name": null}) must actually clear it -- pydantic's
+    exclude_unset distinguishes "not sent" from "sent as null", and that
+    distinction is passed straight through as repo._UNSET vs a real None.
+    """
+    body_fields = body.model_dump(exclude_unset=True, exclude={"actor"})
+    kwargs = {
+        field: body_fields.get(field, repo._UNSET)
+        for field in ("claim_number", "insurer", "adjuster_name", "posture")
+    }
+    try:
+        ro = repo.update_job_intake_fields(cur, ro_number, body.actor, **kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return _ro_to_out(ro)
 
 

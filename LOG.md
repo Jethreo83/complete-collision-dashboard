@@ -357,3 +357,58 @@ NOT DONE / EXPLICITLY DEFERRED
 - Same CCC ONE license / content_manifest.json export blockers as every
   prior session, unchanged.
 
+
+Session: 2026-09-04 (cron cycle, continuous-build task)
+
+FILES MODIFIED
+--------------
+app/repository.py
+  Added update_job_intake_fields() (claim_number/insurer/adjuster_name/
+  posture, post-intake edit, _UNSET-sentinel pattern to distinguish
+  "leave unchanged" from "clear to NULL") -- closes the flagged
+  "Next up" item #1 from the prior cycle.
+
+app/api.py
+  Added PATCH /jobs/{ro_number} + JobIntakeUpdateRequest schema, using
+  pydantic model_dump(exclude_unset=True) to translate JSON
+  absent-vs-null into repo._UNSET vs real None.
+
+test_api.py
+  3 new tests for the PATCH route (partial update, explicit null clear,
+  404 on unknown RO). Suite now 54/54 (up from 51/51).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_patch_job_intake.py
+  Real HTTP smoke test against staging (uvicorn + requests), same
+  discipline as the existing estimate smoke test.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- Full suite green before/after: 15/15 + 32/32 + 7/7 = 54/54.
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --extended` (reveals password inline);
+  confirmed different host than production before use.
+- uvicorn started against staging on :8010, /health confirmed 200.
+- scripts/_smoke_http_patch_job_intake.py: 14/14 checks passed against
+  the live server (partial PATCH preserves other fields, explicit null
+  clears exactly the targeted field, GET independently confirms
+  persistence, unknown RO returns 404).
+- Cleanup by explicit ID/VIN/email match, re-verified 0 rows remaining
+  both by the smoke script itself and a separate independent query.
+- uvicorn killed by real listening PID (netstat), confirmed stopped via
+  curl failure + netstat re-check.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Same CCC ONE / content_manifest.json blockers as always.
+- No pending migration-promotion decision right now.
+- provision_new_staff_user() HTTP route, identity-service swap — both
+  still deferred, unchanged reasoning.
+
+Next up: no route yet to revise gross_revenue post-intake (financial
+figure — needs an audit-trail design decision before building, not
+guessed at this cycle).
+
+

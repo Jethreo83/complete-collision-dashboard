@@ -292,6 +292,63 @@ def transition_job_status(
     return _repair_order_from_row(row)
 
 
+class _Unset:
+    """Sentinel type for update_job_intake_fields() -- see its docstring.
+    Defined here (before first use) since Python evaluates default
+    argument values at function-definition time, not call time."""
+    def __repr__(self):
+        return "UNSET"
+
+
+_UNSET = _Unset()
+
+
+def update_job_intake_fields(
+    cur, ro_number: str, actor: str,
+    claim_number=_UNSET, insurer=_UNSET, adjuster_name=_UNSET, posture=_UNSET,
+) -> RepairOrder:
+    """Revise intake-time fields after creation (flagged as a real gap in
+    the 2026-09-06 WORKLOG's "Next up" list -- create_repair_order() made
+    these write-once, but Phase 1 CSV/manual entry commonly learns the
+    claim number, insurer, adjuster, or posture AFTER the initial RO
+    intake row exists, not at creation time).
+
+    Uses a sentinel (`_UNSET`) rather than relying on `None` to mean
+    "leave unchanged", because these columns are legitimately nullable --
+    a caller must be able to explicitly clear e.g. adjuster_name back to
+    NULL (adjuster reassigned, claim dropped) without that being
+    indistinguishable from "field not supplied". Only fields explicitly
+    passed (not _UNSET) are included in the UPDATE.
+
+    Deliberately does NOT touch status (use transition_job_status(), which
+    also validates the state machine and records a job_event) or any of
+    the cost/revenue columns (write-once at creation or DB-trigger-derived
+    per migration 010 -- see create_repair_order()'s own docstring).
+    """
+    current = get_repair_order_by_ro_number(cur, ro_number)
+    if current is None:
+        raise ValueError(f"No job with ro_number={ro_number!r}")
+
+    fields = {
+        "claim_number": claim_number, "insurer": insurer,
+        "adjuster_name": adjuster_name, "posture": posture,
+    }
+    to_set = {k: v for k, v in fields.items() if v is not _UNSET}
+    if not to_set:
+        return current  # nothing to do; not an error -- a no-op PATCH is valid
+
+    set_clause = ", ".join(f"{col} = %s" for col in to_set)
+    cur.execute(
+        f"""
+        UPDATE collision.job SET {set_clause}, updated_at = now(), updated_by = %s
+        WHERE ro_number = %s
+        RETURNING *
+        """,
+        (*to_set.values(), actor, ro_number),
+    )
+    return _repair_order_from_row(cur.fetchone())
+
+
 def list_job_events(cur, ro_number: str) -> list[JobEvent]:
     cur.execute(
         """

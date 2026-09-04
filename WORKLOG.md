@@ -1647,6 +1647,111 @@ deferred):
 2. Same CCC ONE / content_manifest.json blockers as always.
 
 
+Session: 2026-09-04 (cron cycle, continuous-build task — closes prior
+cycle's flagged "Next up" item)
+
+FILES MODIFIED
+--------------
+app/repository.py
+  Added update_job_intake_fields() -- closes "Next up" item #1 flagged in
+  the previous cycle's WORKLOG entry: claim_number/insurer/adjuster_name/
+  posture were write-once at create_repair_order() time, but Phase 1
+  manual/CSV entry commonly learns these AFTER initial RO intake (e.g.
+  claim number assigned later). Uses a module-level _UNSET sentinel
+  (distinct from None) so callers can explicitly clear a nullable field
+  to NULL without that being indistinguishable from "field not supplied".
+  Does not touch status (use transition_job_status(), which validates the
+  state machine) or cost/revenue columns (write-once or DB-trigger-derived
+  per migration 010).
+
+app/api.py
+  Added PATCH /jobs/{ro_number} route + JobIntakeUpdateRequest schema.
+  Uses pydantic's model.model_dump(exclude_unset=True) to distinguish
+  "field absent from JSON body" (leave unchanged, passed to repo as
+  repo._UNSET) from "field explicitly sent as JSON null" (real None,
+  clears the column) -- this distinction is the entire point of the
+  route and is exercised by both the mocked unit tests and the real HTTP
+  smoke test below.
+
+test_api.py
+  3 new tests: test_patch_job_intake_partial_update_only_passes_supplied_fields
+  (verifies absent fields arrive at the repo call as repo._UNSET, not None),
+  test_patch_job_intake_explicit_null_clears_field (verifies explicit JSON
+  null arrives as a real None, distinct from _UNSET), test_patch_job_intake_
+  job_not_found_returns_404. Full suite now 54/54 (up from 51/51).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_patch_job_intake.py
+  Real HTTP-level smoke test (uvicorn + real `requests` calls, not
+  TestClient mocks) against real staging -- same discipline as
+  scripts/_smoke_http_create_estimate.py: test data created/deleted via
+  explicit ID/VIN/email match, never a blanket delete; cleanup
+  independently re-verified by a follow-up query.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first -- clean, no concurrent-session
+  drift, no uncommitted edits from a prior unattended run.
+- Full unit suite green before AND after: test_models.py 15/15,
+  test_api.py 32/32 (up from 29/29), test_pdr_settlement.py 7/7 = 54/54.
+- Retrieved a real STAGING (br-broad-hat-a5uyz6he) connection string via
+  `neon connection-string staging --role-name neondb_owner --extended`
+  (the --extended flag reveals the actual password inline, unlike the
+  default table output which masks it) -- confirmed this resolves to a
+  DIFFERENT host (ep-bold-leaf-a5dr4amg) than production
+  (ep-damp-bird-a5vtcqmv) before using it, per the branch-resolution bug
+  documented earlier in this file.
+- Started a real `uvicorn app.api:app --port 8010` background process
+  pointed at that staging connection string via COLLISION_DB_ENV_VAR.
+  Confirmed listening via `curl /health` (200) before running the smoke
+  script.
+- Ran scripts/_smoke_http_patch_job_intake.py against that live server:
+  14/14 checks passed -- a partial PATCH (insurer only) left
+  claim_number/adjuster_name/posture unchanged; a second PATCH with an
+  explicit JSON null cleared adjuster_name while leaving the insurer
+  value just set (and claim_number) intact; an independent GET confirmed
+  all of this actually persisted in Postgres, not just echoed back in the
+  PATCH response; an unknown RO number produced a real 404.
+- Cleaned up via explicit ID/VIN/email match (never blanket delete), then
+  independently re-queried staging: 0 job/vehicle/customer/person rows
+  remaining.
+- Killed the uvicorn process by its real listening PID from
+  `netstat -ano | grep :8010 | grep LISTENING` (not the launcher's
+  reported PID), then confirmed stopped via both a `curl` connection
+  failure and a follow-up `netstat` showing no LISTENING entry -- same
+  discipline flagged as a host gotcha in an earlier cycle, reapplied.
+- Independently re-ran a clean-state check against staging afterward
+  (separate script from the smoke script's own cleanup verification,
+  since deleted): 0 rows on collision.job/vehicle/customer and 0
+  leftover platform.person rows.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Same CCC ONE license / content_manifest.json export blockers as every
+  prior session, unchanged -- Phase 3 AI estimator remains blocked
+  pending CCC's written answer on Section 2.4.
+- No migration-promotion decision pending right now (006/010 already
+  resolved to production in an earlier cycle per WORKLOG history).
+- No frontend, no auth/session layer -- unchanged blockers.
+- provision_new_staff_user() still has no HTTP route (privileged
+  connection reasoning unchanged).
+- The platform.match_or_create_person() identity-service swap (logged
+  2026-09-06, "not urgent") still not acted on -- this cycle's PATCH
+  route doesn't touch platform.person either, so still not a natural
+  trigger to pick it up.
+
+Next up (not started this session, flagged rather than silently
+deferred):
+1. No route/repo function yet to edit gross_revenue after RO creation --
+   same write-once-at-intake pattern as the claim_number/insurer fields
+   just fixed, but gross_revenue is a financial figure so a real
+   audit-trail decision (should edits go through job_event too, or a
+   separate revision log?) is needed before guessing at the shape.
+   Flagging rather than building speculatively.
+2. Same CCC ONE / content_manifest.json blockers as always.
+
+
 
 
 

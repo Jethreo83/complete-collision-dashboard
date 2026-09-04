@@ -119,6 +119,63 @@ def test_transition_job_bad_status_value_returns_400():
     check("test_transition_job_bad_status_value_returns_400", r.status_code == 400, r.text)
 
 
+def test_patch_job_intake_partial_update_only_passes_supplied_fields():
+    """exclude_unset is the core behavior under test: a field absent from
+    the JSON body must arrive at repo.update_job_intake_fields() as the
+    repo._UNSET sentinel (not None, not omitted), while a field that IS
+    supplied (even if its value happens to equal the old value) must
+    arrive as a real value."""
+    import app.repository as repo_module
+    updated = _sample_ro(insurer="New Insurer Co")
+    with patch("app.api.repo.update_job_intake_fields", return_value=updated) as mock_update:
+        r = client.patch(
+            "/jobs/RO-10001",
+            json={"insurer": "New Insurer Co", "actor": "jed"},
+        )
+    check("test_patch_job_intake_partial_update_status", r.status_code == 200, r.text)
+    check("test_patch_job_intake_partial_update_body", r.json()["insurer"] == "New Insurer Co")
+    args, kwargs = mock_update.call_args
+    check(
+        "test_patch_job_intake_partial_update_only_insurer_set",
+        kwargs.get("insurer") == "New Insurer Co"
+        and kwargs.get("claim_number") is repo_module._UNSET
+        and kwargs.get("adjuster_name") is repo_module._UNSET
+        and kwargs.get("posture") is repo_module._UNSET,
+        f"kwargs={kwargs}",
+    )
+
+
+def test_patch_job_intake_explicit_null_clears_field():
+    """A field explicitly sent as JSON null (not merely absent) must pass
+    through as a real None, distinct from the _UNSET sentinel used for
+    absent fields -- this is the whole reason the route uses
+    exclude_unset instead of the schema's own defaults."""
+    import app.repository as repo_module
+    updated = _sample_ro(adjuster_name=None)
+    with patch("app.api.repo.update_job_intake_fields", return_value=updated) as mock_update:
+        r = client.patch(
+            "/jobs/RO-10001",
+            json={"adjuster_name": None, "actor": "jed"},
+        )
+    check("test_patch_job_intake_explicit_null_status", r.status_code == 200, r.text)
+    check("test_patch_job_intake_explicit_null_body", r.json()["adjuster_name"] is None)
+    args, kwargs = mock_update.call_args
+    check(
+        "test_patch_job_intake_explicit_null_kwargs",
+        kwargs.get("adjuster_name") is None and kwargs.get("insurer") is repo_module._UNSET,
+        f"kwargs={kwargs}",
+    )
+
+
+def test_patch_job_intake_job_not_found_returns_404():
+    with patch("app.api.repo.update_job_intake_fields", side_effect=ValueError("No job with ro_number='RO-NOPE'")):
+        r = client.patch(
+            "/jobs/RO-NOPE",
+            json={"claim_number": "CLM-9", "actor": "jed"},
+        )
+    check("test_patch_job_intake_job_not_found_returns_404", r.status_code == 404, r.text)
+
+
 def test_get_job_costs():
     entries = [
         CostEntry(id=1, job_id=1, category=CostCategory.PARTS, amount=Decimal("410.50"),
@@ -357,7 +414,11 @@ if __name__ == "__main__":
     tests = [
         test_health, test_get_job_found, test_get_job_not_found, test_get_job_events,
         test_transition_job_success, test_transition_job_illegal_returns_400,
-        test_transition_job_bad_status_value_returns_400, test_get_job_costs,
+        test_transition_job_bad_status_value_returns_400,
+        test_patch_job_intake_partial_update_only_passes_supplied_fields,
+        test_patch_job_intake_explicit_null_clears_field,
+        test_patch_job_intake_job_not_found_returns_404,
+        test_get_job_costs,
         test_add_job_cost, test_add_job_cost_bad_category_returns_400,
         test_add_job_cost_negative_amount_returns_400, test_recalculate_job_costs,
         test_job_not_found_on_costs_endpoint,
