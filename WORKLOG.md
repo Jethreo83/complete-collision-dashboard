@@ -247,3 +247,16 @@ work CAN safely proceed without guessing that boundary (e.g. the
 owner/manager/receptionist enum shape and provisioning mechanism, without
 finalizing what receptionist can/can't do) if hermes confirms that's
 still in the safe lane once the full rule text comes through.
+
+2026-09-04 (coordination note from hermes, no code change)
+- hermes flagged: the Neon `staging` branch on aged-art-92489373 is
+  shared by all three build tracks (VLS, Elektrica, Complete Collision).
+  Each track resets staging from production before its own tests, which
+  can wipe another track's in-progress staging-only state (nothing
+  permanently lost — everything committed lives in each repo's git
+  history). Adopted as standing practice going forward: always re-run a
+  direct schema check against staging immediately before promoting to
+  production, not just trust an earlier verify run if time has passed.
+  Documented in README.md's Deploy process section so it's not just in
+  this log. No migration of mine was mid-flight when this was raised —
+  003 was already fully promoted and confirmed live.

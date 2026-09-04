@@ -90,6 +90,17 @@ Same discipline as VLS/Elektrica: every migration applied to the Neon
 by direct query, staging reset to a clean mirror of production, then
 promoted, tagged on promotion.
 
+**Shared-staging caveat (per hermes, 2026-09-04):** the `staging` branch
+on project `aged-art-92489373` is shared by all three build tracks (VLS,
+Elektrica, Complete Collision). Each track resets staging from production
+before its own migration tests, which can wipe another track's
+in-progress test data or uncommitted staging-only schema state (nothing
+is permanently lost — migration SQL and verify scripts are committed to
+each repo's git history). Practical rule adopted here: **always re-run a
+direct schema check against staging immediately before promoting**,
+rather than trusting an earlier verification run if any time has passed
+— another track's reset could have changed staging state in between.
+
 ## Open questions blocking further schema work
 
 See `docs/ADR-001-complete-collision.md` §6.
