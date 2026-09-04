@@ -189,3 +189,61 @@ standing draft-and-hold + no-VLS-boundary rules)
 Next up: collision.estimate (manual + webhook-proposal + AI-draft
 versions, per handoff §2.3/CC-4), staff auth/roles once Jed is back to
 answer the receptionist-permissions question.
+
+2026-09-04 (later still, overnight, still building per hermes's standing
+instruction — full text of the overnight rule set has now been requested
+twice and both replies were truncated before the substance came through;
+not blocking on it, continuing only on work that's already inside my own
+standing rules: no CCC ONE contact, no external deploys/sends, no VLS
+source access)
+- Built migrations/003_collision_estimate.sql: collision.estimate per
+  handoff §2.3/CC-4. source enum (manual/ccc_one_webhook/ai_proposed);
+  separate draft_content/confirmed_content JSONB, table is INSERT+SELECT
+  only for collision_app (no UPDATE grant) so a correction is a new
+  version row, never a mutation of what was originally proposed — this
+  is what protects the AI-training signal CC-4 cares about (what the AI
+  proposed vs. what a human changed).
+- Enforced Phase 1 scope at the SCHEMA level, not just as a comment: a
+  CHECK constraint rejects any source='manual' row without
+  confirmed_content set (manual entry has no separate draft/pending
+  state — a human typing an estimate directly IS the confirmed value),
+  while ai_proposed/ccc_one_webhook rows may legitimately be unconfirmed.
+  A second CHECK enforces confirmed_content/confirmed_by/confirmed_at are
+  set together or not at all (no partial confirmation state). Neither
+  non-manual source has any writer built yet (Phase 2/3) — the shape
+  exists, nothing populates it, per handoff §2.3's explicit instruction
+  ("Phase 1 stores manual estimates only, but the shape exists from day
+  one").
+- Wrote scripts/verify_003.sql (6 checks: manual estimate insertable
+  fully-confirmed, manual-unconfirmed rejected by CHECK, ai_proposed
+  unconfirmed accepted, partial confirmation rejected by CHECK,
+  (job_id, version) uniqueness enforced, collision_app blocked from
+  UPDATE).
+- Full cycle again: staging still had the pre-002 production snapshot
+  from an earlier reset, so migration 001 correctly no-op'd (schema
+  already existed, rolled back that one non-fatal statement) while 002
+  and 003 applied fresh — confirmed by direct query (table list,
+  job_count=0, estimate_count=0) before trusting anything, not assumed
+  from exit codes. Ran verify_003.sql — all 6 checks passed by real
+  output. Reset staging clean. Queried production directly before
+  promoting 003 (confirmed: customer/job/job_event/vehicle only, no
+  estimate) and again after (confirmed: estimate now present alongside
+  the rest) — before/after diff, not trust-the-commit-message.
+- Learned from the migration-002 tagging mistake: this time, created a
+  throwaway tag, immediately deleted it without pushing, and only tagged
+  for real once the commit with migrations/003_collision_estimate.sql was
+  confirmed pushed and matching origin/main via git ls-remote.
+- Tagged collision-migration-003, pushed tag and commit.
+- Did not touch CCC ONE, did not deploy externally, did not send
+  anything to PDR Crew/CCC/customers, did not read VLS source.
+
+Next up: staff auth/roles (owner/manager/receptionist per ADR-001 §4) is
+the next Phase 1 item, but the exact receptionist permission boundary is
+an open question that needs Jed's input (ADR-001 §6 item 1) — will hold
+that specific design decision for him rather than guess at permission
+boundaries for a real staff member's system access, even under the
+"keep building overnight" instruction. Will look at what schema/roles
+work CAN safely proceed without guessing that boundary (e.g. the
+owner/manager/receptionist enum shape and provisioning mechanism, without
+finalizing what receptionist can/can't do) if hermes confirms that's
+still in the safe lane once the full rule text comes through.

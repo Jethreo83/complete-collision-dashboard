@@ -4,7 +4,7 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 002, tag `collision-migration-002`)
+## Status (as of migration 003, tag `collision-migration-003`)
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
@@ -43,6 +43,24 @@ discipline as VLS and Elektrica: schema and core business logic first.
   `valid_next_states()` trigger; see the migration file's own
   SIMPLIFICATION note on why). Applied and verified same staging → verify
   → reset → promote discipline. Tagged `collision-migration-002`.
+- **`collision.estimate`** (`migrations/003_collision_estimate.sql`) —
+  versioned estimates per handoff §2.3/CC-4: `source` enum
+  (manual/ccc_one_webhook/ai_proposed), separate immutable
+  `draft_content`/`confirmed_content` JSONB columns (append-only table,
+  no UPDATE grant — corrections are new versions, not mutations, per
+  CC-4's requirement that "both the AI draft and the confirmed estimate
+  are stored"). Phase 1 scope enforced at the schema level, not just in
+  comments: a `CHECK` constraint rejects any `source='manual'` row
+  without `confirmed_content` set (manual entry has no separate
+  draft/pending state), while `ai_proposed`/`ccc_one_webhook` rows may
+  legitimately sit unconfirmed. Nothing in this repo writes
+  `ccc_one_webhook` or `ai_proposed` rows yet — that's Phase 2/3 wiring,
+  intentionally out of scope until the webhook payload inspection (ADR-001
+  §2) and CCC ONE license question (ADR-001 §1) resolve. Verified with 6
+  checks (manual-confirmed insert, manual-unconfirmed rejected,
+  ai_proposed-unconfirmed accepted, partial-confirmation rejected,
+  version uniqueness, `collision_app` blocked from UPDATE). Tagged
+  `collision-migration-003`.
 
 ### Business logic — written and tested, no DB dependency
 
@@ -78,11 +96,12 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
-- `collision.estimate` (manual + webhook-proposal + AI-draft versions,
-  per handoff §2.3 and CC-4)
 - Staff auth/roles (owner/manager/receptionist), per ADR-001 §4
 - `valid_next_states()`-style transition enforcement on `collision.job`
   (currently append-only log, no SQL-level state-machine constraint — see
   migrations/002_collision_job.sql's SIMPLIFICATION note)
+- `collision.estimate` writers for `ccc_one_webhook`/`ai_proposed`
+  sources (the shape exists; nothing writes to it yet — Phase 2/3, see
+  migrations/003_collision_estimate.sql header)
 - Content library migration, engagement-pull-back integration
 - Backend/API server, frontend
