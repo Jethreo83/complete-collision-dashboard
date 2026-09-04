@@ -109,8 +109,15 @@ FROM collision.job WHERE ro_number = 'RO-TEST-9006';
 SELECT count(*) AS visible_entries_after_insert FROM collision.cost_entry ce
 JOIN collision.job j ON j.id = ce.job_id WHERE j.ro_number = 'RO-TEST-9006';
 -- EXPECT: 4
-RESET ROLE;
 
+-- BUGFIX (2026-09-06): this UPDATE test must run BEFORE "RESET ROLE" --
+-- RESET ROLE undoes "SET ROLE collision_app" above, so testing after
+-- reset silently runs as the connecting (privileged) role instead of
+-- collision_app, making this check pass for the wrong reason (it would
+-- "pass" even if collision_app genuinely had UPDATE). Confirmed via
+-- direct grant query that collision_app never actually had UPDATE on
+-- cost_entry -- this was a test-script ordering bug, not a real
+-- security gap.
 DO $$
 BEGIN
   UPDATE collision.cost_entry SET amount = 0.01 WHERE description = 'bumper cover';
@@ -118,6 +125,8 @@ BEGIN
 EXCEPTION WHEN insufficient_privilege THEN
   RAISE NOTICE 'CHECK 7b PASSED: collision_app blocked from UPDATE on cost_entry';
 END $$;
+
+RESET ROLE;
 
 -- CHECK 8: site_name_unique constraint enforced.
 DO $$
