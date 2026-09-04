@@ -35,9 +35,12 @@ this module is pure computation, NOT document rendering, so it does not
 violate the "no project builds its own document generator" rule --
 confirmed directly with Jed/hermes 2026-09-04. format_statement()'s
 plain-text output below is a draft-review artifact for Jed, not a
-rendered PDF. If/when a real PDF settlement statement is needed, THAT
-step must call the shared document generator once it exists -- do not
-add PDF rendering or a parallel document pipeline to this module.
+rendered PDF. The shared generator now has a real home (2026-09-05,
+built+verified by elektrica-dashboard, live on staging):
+platform.document_template / platform.document / platform.outbound_log.
+If/when a real PDF settlement statement is needed, THAT step must call
+those platform tables -- do not add PDF rendering or a parallel
+document/template pipeline to this module.
 If Jed decides to wait [on the PDR Crew agreement signature], this
 computation stays unused until he says otherwise. ***
 """

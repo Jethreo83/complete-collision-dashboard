@@ -856,3 +856,26 @@ Open items for Jed, unchanged from prior session plus:
    collision.staff_user_capability() — flagged in the code, not blocking
    anything today.
 
+2026-09-05 (shared document generator now has a real home — doc update
+only, no schema work)
+- hermes: the shared document generator (convention #2) is no longer
+  hypothetical — built and verified by elektrica-dashboard, live on
+  staging: platform.document_template / platform.document /
+  platform.outbound_log. Whenever Complete Collision needs to actually
+  render a PDF (a real PDR Crew settlement statement, anything client-
+  facing), build against those platform tables, not a parallel
+  collision-schema equivalent. pdr_settlement.py itself is unaffected —
+  still pure computation, already resolved 2026-09-04, confirmed again
+  here that nothing changes for it until an actual PDF-rendering step is
+  built on top of it.
+- Checked git log/fetch first (per standing practice) — clean, no
+  concurrent activity.
+- Updated docs/SHARED_CONVENTIONS_NOTE.md's convention #2 entry and
+  pdr_settlement.py's own docstring to name the real platform tables
+  instead of "once it exists" — keeps both documents accurate rather
+  than stale. Re-ran test_pdr_settlement.py after the docstring-only
+  edit: 7/7 still passed.
+- No schema/code change beyond the two doc updates above. Nothing to
+  promote, nothing to tag.
+
+

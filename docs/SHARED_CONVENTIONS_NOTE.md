@@ -17,13 +17,19 @@ against these six shared primitives rather than reinventing them.
    **Resolved 2026-09-04 (hermes, direct):** `pdr_settlement.py` does
    NOT violate this — it's pure computation (profit-split formula
    producing numbers), not document rendering, same category as
-   `vls.settlement_breakdown`. If/when Complete Collision needs an
-   actual PDF settlement statement (not just the numbers), THAT step
-   goes through the shared generator once it exists; the computation
-   stays here. Any future document-producing feature (PDR Crew
-   statements as real PDFs, marketing captions, demand-letter-adjacent
-   work if it ever arises) must call the shared generator, not build a
-   parallel one.
+   `vls.settlement_breakdown`. **Has a real home now (2026-09-05,
+   hermes):** built and verified by elektrica-dashboard, live on
+   staging — `platform.document_template`, `platform.document`,
+   `platform.outbound_log`. Whenever Complete Collision needs to
+   actually generate a PDF document (a real PDR Crew settlement
+   statement, a demand letter if that ever becomes relevant, anything
+   client-facing), build against THOSE platform tables — do not create
+   a parallel document/template/log table in the `collision` schema.
+   `pdr_settlement.py` stays exactly as-is (pure computation feeding
+   numbers to whatever eventually calls the platform document
+   generator); this convention only bites once actual PDF rendering
+   from a template is being built, which hasn't happened yet for
+   Complete Collision.
 3. **State-machine engine** — one append-only `case_event` pattern, JP
    logic lives once in VLS, reused not forked. Not directly relevant to
    Complete Collision unless it ever needs litigation state (unlikely).
