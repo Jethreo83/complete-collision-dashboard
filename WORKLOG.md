@@ -386,3 +386,42 @@ which handoff §2.5 explicitly warns against. Receptionist permissions
 still pending Jed. Backend/API/frontend work is the next unblocked
 category if further building is wanted before Jed's back.
 
+2026-09-04 (stand-down for the night)
+- hermes independently verified all 7 collision tables (customer, job,
+  job_event, vehicle, estimate, staff_user, content_item) live in
+  production and agreed this is the right place to stop: everything
+  remaining in Phase 1 scope needs Jed's direct answer (receptionist
+  permissions, PDR Crew draft-vs-signed timing), a real data export
+  (content_manifest.json / cc_local_data.json et al. on "the mini"), or
+  CCC's written clarification (the license question) — not more schema
+  work this bot can productively do alone tonight.
+- Standing down. Summary of tonight's session for Jed's morning review:
+  5 migrations (001-005) shipped, each independently verified by direct
+  query before AND after promotion, each tagged only after confirming the
+  commit landed on origin/main. The PDR Crew settlement calculator
+  (pdr_settlement.py) was built and tested earlier the same session,
+  7/7 passing, no DB dependency. Caught and corrected two real mistakes
+  along the way rather than letting them stand: a tag pointing at the
+  wrong commit (migration 002) and two live instances of shared-staging
+  drift from other build tracks (migrations 004 and 005) that were
+  caught by checking real state before acting rather than trusting a
+  stale assumption.
+- No CCC ONE contact, no external deploys, nothing sent to PDR Crew/CCC/
+  customers, no VLS source access, at any point tonight.
+
+All open items for Jed, consolidated:
+1. Which CCC ONE data-sharing mechanism (EMS Extract/Secure Share/DMS
+   Interface/CCC Indicators) is actually licensed on the account (ADR-001
+   §1) — blocks Phase 3 entirely, touches Phase 1's "CCC ONE view" UI.
+2. Exact receptionist permission boundaries vs. manager/owner (ADR-001
+   §4/§6) — blocks wiring real access control on collision.staff_user.
+3. Build against the current draft (unsigned) PDR Crew Operating
+   Agreement now, or wait for signature? (ADR-001 §6)
+4. Whether an existing accounting system feeds Direct RO Costs/Labor
+   Costs/Rent-Utilities, or manual entry (ADR-001 §6).
+5. Are the "CC Cristian"/"CC Operations" sheet tabs still live or legacy
+   (ADR-001 §6, unanswered from the original handoff).
+6. kay-successor's report on the 4 cccone_logs webhook payloads' actual
+   contents (asked 2026-09-04, not yet received — separate from tonight's
+   schema work, tracked but not blocking it).
+

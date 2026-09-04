@@ -4,7 +4,9 @@ Operational dashboard for Complete Collision & Auto Repair LLC. See
 `docs/ADR-001-complete-collision.md` (approved by Jed, 2026-09-03, with
 Phase 3 conditionally blocked) for scope, architecture, and data model.
 
-## Status (as of migration 005, tag `collision-migration-005`)
+## Status (as of migration 005, tag `collision-migration-005`) — standing
+down for the night, 2026-09-04. All open items needing Jed are
+consolidated at the bottom of `WORKLOG.md`'s final entry.
 
 **No backend/API/frontend exists yet.** Following the same build-order
 discipline as VLS and Elektrica: schema and core business logic first.
