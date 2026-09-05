@@ -4,12 +4,14 @@ import LoginPage from './pages/LoginPage';
 import JobListPage from './pages/JobListPage';
 import JobDetailPage from './pages/JobDetailPage';
 import NewJobPage from './pages/NewJobPage';
+import NewCustomerPage from './pages/NewCustomerPage';
 import JobLookupPage from './pages/JobLookupPage';
 import StaffAdminPage from './pages/StaffAdminPage';
 import SettlementPage from './pages/SettlementPage';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Jobs' },
+  { to: '/customers/new', label: 'New Customer' },
   { to: '/lookup', label: 'Look Up RO' },
   { to: '/settlement', label: 'PDR Settlement' },
 ];
@@ -27,7 +29,10 @@ function AppShell() {
 
   const activeLabel =
     navItems.find((n) => n.to === location.pathname)?.label ??
-    (location.pathname.startsWith('/jobs/') ? 'Job Detail' : location.pathname === '/jobs/new' ? 'New Job' : 'Complete Collision');
+    (location.pathname === '/jobs/new' ? 'New Job'
+      : location.pathname === '/customers/new' ? 'New Customer'
+      : location.pathname.startsWith('/jobs/') ? 'Job Detail'
+      : 'Complete Collision');
 
   return (
     <div className="cc-app">
@@ -58,6 +63,7 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<JobListPage />} />
           <Route path="/jobs/new" element={<NewJobPage />} />
+          <Route path="/customers/new" element={<NewCustomerPage />} />
           <Route path="/jobs/:roNumber" element={<JobDetailPage />} />
           <Route path="/lookup" element={<JobLookupPage />} />
           <Route path="/settlement" element={<SettlementPage />} />

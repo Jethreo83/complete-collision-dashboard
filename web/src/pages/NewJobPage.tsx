@@ -6,7 +6,7 @@
 // "Look up person" button hits GET /persons/{id} (added this cycle) so
 // staff can confirm they typed the right person_id before submitting.
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { api, type JobCategory, type JobStatus } from '../api';
 import { getActor } from '../auth';
 
@@ -83,7 +83,8 @@ export default function NewJobPage() {
         Creates a new RO (repair order) job. <code>person_id</code> must
         already exist in the shared platform person table — this
         dashboard cannot create brand-new people yet (see README/open
-        questions).
+        questions). Don't know the person_id?{' '}
+        <Link to="/customers/new" className="cc-link">Look up or create the customer first</Link>.
       </p>
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>

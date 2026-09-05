@@ -192,6 +192,26 @@ export interface PersonPreview {
   phone_normalized: string | null;
 }
 
+// Customer intake (POST /customers/intake) — the real identity-resolution
+// path via platform.match_or_create_person(), added this cycle. Mirrors
+// app/api.py's CustomerIntakeRequest/CustomerIntakeOut 1:1.
+export interface CustomerIntakeRequest {
+  first_name: string;
+  last_name: string;
+  actor: string;
+  date_of_birth?: string; // YYYY-MM-DD
+  email?: string;
+  phone?: string;
+  source?: string; // defaults server-side to 'walk_in'
+}
+
+export interface CustomerIntakeResult {
+  match_status: 'attached' | 'created' | 'queued';
+  person_id: number;
+  queue_id: number | null;
+  customer: Customer | null;
+}
+
 export const api = {
   apiFetchPerson: (personId: string | number) => apiFetch<PersonPreview>(`/persons/${personId}`),
 
@@ -248,4 +268,8 @@ export const api = {
   // PDR Crew settlement (read-only draft calculator)
   getPdrSettlement: (siteId: number, month: string) =>
     apiFetch<MonthlySettlement>(`/settlements/pdr-crew?site_id=${siteId}&month=${encodeURIComponent(month)}`),
+
+  // Customer intake (new/returning customer identity resolution)
+  intakeCustomer: (body: CustomerIntakeRequest) =>
+    apiFetch<CustomerIntakeResult>('/customers/intake', { method: 'POST', body: JSON.stringify(body) }),
 };
