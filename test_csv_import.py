@@ -103,6 +103,25 @@ def write_csv(rows: list[dict], headers: list[str]) -> str:
     return path
 
 
+def repo_module_result(match_status: str, person_id: int, queue_id=None):
+    """Builds a real app.repository.CustomerIntakeResult (not a bare
+    MagicMock) so import_customers_csv()'s match_status branching is
+    exercised against the actual return-shape contract, same discipline
+    test_api.py's test_intake_customer_* tests already use for the API
+    route consuming this same repository function."""
+    from app import repository as repo_mod
+    customer = None
+    if match_status in ("attached", "created"):
+        customer = repo_mod.Customer(
+            id=1, person_id=person_id, source="walk_in",
+            elektrica_renter_ref=None, created_at=None, created_by="jed",
+        )
+    return repo_mod.CustomerIntakeResult(
+        match_status=match_status, person_id=person_id,
+        queue_id=queue_id, customer=customer,
+    )
+
+
 # ---------------------------------------------------------------------------
 # ImportReport
 # ---------------------------------------------------------------------------
@@ -180,78 +199,94 @@ def test_parse_date_invalid_raises():
 
 
 # ---------------------------------------------------------------------------
-# import_customers_csv
+# import_customers_csv (rewritten 2026-09-05: now goes through
+# app.repository.match_or_create_and_link_customer(), same primitive
+# POST /customers/intake and POST /staff/intake already use, instead of
+# a raw exact-email platform.person SELECT)
 # ---------------------------------------------------------------------------
 
-def test_import_customers_dry_run_reports_created_without_writing():
+def test_import_customers_dry_run_never_calls_repository():
     path = write_csv(
         [{"first_name": "A", "last_name": "B", "email": "a@x.com", "phone": "", "source": ""}],
         ["first_name", "last_name", "email", "phone", "source"],
     )
-    cur = FakeCursor({"a@x.com": 5})
-    with patch("app.csv_import.repo.get_customer_by_person_id", return_value=None), \
-         patch("app.csv_import.repo.create_customer_for_existing_person") as mock_create:
+    cur = FakeCursor({})
+    with patch("app.csv_import.repo.match_or_create_and_link_customer") as mock_match:
         report = ci.import_customers_csv(cur, path, "jed", dry_run=True)
     check("test_import_customers_dry_run_created_count", report.created == 1, report.summary())
     check("test_import_customers_dry_run_no_errors", report.ok(), report.summary())
-    check("test_import_customers_dry_run_never_writes", mock_create.call_count == 0)
+    check("test_import_customers_dry_run_never_calls_repository", mock_match.call_count == 0)
 
 
-def test_import_customers_commit_calls_create_with_source():
+def test_import_customers_commit_attached_status():
     path = write_csv(
-        [{"first_name": "A", "last_name": "B", "email": "A@X.com", "phone": "", "source": "insurer_referred"}],
+        [{"first_name": "A", "last_name": "B", "email": "A@X.com", "phone": "(512) 555-0100", "source": "insurer_referred"}],
         ["first_name", "last_name", "email", "phone", "source"],
     )
-    cur = FakeCursor({"a@x.com": 5})
-    with patch("app.csv_import.repo.get_customer_by_person_id", return_value=None), \
-         patch("app.csv_import.repo.create_customer_for_existing_person") as mock_create:
+    cur = FakeCursor({})
+    result = repo_module_result("attached", person_id=5)
+    with patch("app.csv_import.repo.match_or_create_and_link_customer", return_value=result) as mock_match:
         report = ci.import_customers_csv(cur, path, "jed", dry_run=False)
-    check("test_import_customers_commit_created_count", report.created == 1, report.summary())
-    args, kwargs = mock_create.call_args
+    check("test_import_customers_commit_attached_count", report.attached == 1 and report.created == 0, report.summary())
+    args, kwargs = mock_match.call_args
     check(
-        "test_import_customers_commit_email_lowercased_for_lookup_and_source_passed",
-        args[1] == 5 and (kwargs.get("source") == "insurer_referred" or "insurer_referred" in args),
+        "test_import_customers_commit_email_and_phone_normalized_and_source_passed",
+        kwargs.get("email_normalized") == "a@x.com"
+        and kwargs.get("phone_normalized") == "5125550100"
+        and kwargs.get("source") == "insurer_referred",
         f"args={args} kwargs={kwargs}",
     )
 
 
-def test_import_customers_missing_email_is_error_row():
+def test_import_customers_commit_created_status():
     path = write_csv(
-        [{"first_name": "A", "last_name": "B", "email": "", "phone": "", "source": ""}],
+        [{"first_name": "New", "last_name": "Walkin", "email": "", "phone": "", "source": ""}],
+        ["first_name", "last_name", "email", "phone", "source"],
+    )
+    cur = FakeCursor({})
+    result = repo_module_result("created", person_id=42)
+    with patch("app.csv_import.repo.match_or_create_and_link_customer", return_value=result):
+        report = ci.import_customers_csv(cur, path, "jed", dry_run=False)
+    check("test_import_customers_commit_created_count", report.created == 1, report.summary())
+
+
+def test_import_customers_commit_queued_status_not_counted_as_created():
+    path = write_csv(
+        [{"first_name": "Maybe", "last_name": "Sameperson", "email": "", "phone": "", "source": ""}],
+        ["first_name", "last_name", "email", "phone", "source"],
+    )
+    cur = FakeCursor({})
+    result = repo_module_result("queued", person_id=7, queue_id=99)
+    with patch("app.csv_import.repo.match_or_create_and_link_customer", return_value=result):
+        report = ci.import_customers_csv(cur, path, "jed", dry_run=False)
+    check("test_import_customers_queued_count", report.queued == 1 and report.created == 0, report.summary())
+    check(
+        "test_import_customers_queued_detail_has_queue_id",
+        any("queue_id=99" in d for d in report.queued_details),
+        report.queued_details,
+    )
+
+
+def test_import_customers_missing_last_name_is_error_row():
+    path = write_csv(
+        [{"first_name": "A", "last_name": "", "email": "a@x.com", "phone": "", "source": ""}],
         ["first_name", "last_name", "email", "phone", "source"],
     )
     cur = FakeCursor({})
     report = ci.import_customers_csv(cur, path, "jed", dry_run=True)
-    check("test_import_customers_missing_email_is_error", len(report.errors) == 1, report.summary())
-    check("test_import_customers_missing_email_row_number", "row 2" in report.errors[0], report.errors)
+    check("test_import_customers_missing_last_name_is_error", len(report.errors) == 1, report.summary())
+    check("test_import_customers_missing_last_name_row_number", "row 2" in report.errors[0], report.errors)
 
 
-def test_import_customers_person_not_found_is_error_row():
+def test_import_customers_bad_source_is_error_row():
     path = write_csv(
-        [{"first_name": "A", "last_name": "B", "email": "nobody@x.com", "phone": "", "source": ""}],
+        [{"first_name": "A", "last_name": "B", "email": "", "phone": "", "source": "not_a_real_source"}],
         ["first_name", "last_name", "email", "phone", "source"],
     )
-    cur = FakeCursor({})  # no matching person
+    cur = FakeCursor({})
     report = ci.import_customers_csv(cur, path, "jed", dry_run=True)
-    check("test_import_customers_person_not_found_is_error", len(report.errors) == 1, report.summary())
-    check(
-        "test_import_customers_person_not_found_message_is_clear",
-        "no platform.person found" in report.errors[0],
-        report.errors,
-    )
-
-
-def test_import_customers_existing_customer_is_skipped_not_created():
-    path = write_csv(
-        [{"first_name": "A", "last_name": "B", "email": "a@x.com", "phone": "", "source": ""}],
-        ["first_name", "last_name", "email", "phone", "source"],
-    )
-    cur = FakeCursor({"a@x.com": 5})
-    with patch("app.csv_import.repo.get_customer_by_person_id", return_value=object()), \
-         patch("app.csv_import.repo.create_customer_for_existing_person") as mock_create:
-        report = ci.import_customers_csv(cur, path, "jed", dry_run=False)
-    check("test_import_customers_existing_customer_skipped", report.skipped == 1 and report.created == 0)
-    check("test_import_customers_existing_customer_never_double_creates", mock_create.call_count == 0)
+    check("test_import_customers_bad_source_is_error", len(report.errors) == 1, report.summary())
+    check("test_import_customers_bad_source_message_is_clear", "must be one of" in report.errors[0], report.errors)
 
 
 # ---------------------------------------------------------------------------

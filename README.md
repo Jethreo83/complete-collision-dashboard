@@ -261,13 +261,23 @@ and requires clarification before any live integration is built.
   idempotent on natural keys, each supporting `dry_run` (default) vs.
   commit, each returning a structured `ImportReport` instead of just
   printing. Templates with realistic example rows live in
-  `data/templates/`. Deliberately does NOT create brand-new
-  `platform.person` rows itself (see `app/repository.py`'s
-  `create_person_and_customer()` gap above) — `customers.csv` links
-  *existing* people found by email; provision genuinely new people via an
-  admin script under a privileged connection first.
+  `data/templates/`. **Updated 2026-09-05 (continuous-build cycle):**
+  `customers.csv` import now goes through
+  `app.repository.match_or_create_and_link_customer()` — the same shared
+  `platform.match_or_create_person()` identity primitive `POST
+  /customers/intake`/`POST /staff/intake` already use — instead of a raw
+  exact-email `platform.person` lookup. Requires `first_name`+`last_name`
+  now (previously only `email`); reports `attached`/`created`/`queued`
+  outcomes distinctly. Because the underlying primitive issues `SET ROLE
+  platform_identity_service` itself, this import **requires a privileged
+  (`neondb_owner`-class) connection string** — running it as `collision_app`
+  will raise `InsufficientPrivilege`, by design, same requirement
+  `create_person_and_customer()` always documented.
 - **`scripts/csv_import_cli.py`** — CLI wrapper:
   `python scripts/csv_import_cli.py <ENV_VAR> {customers,vehicles,jobs,costs} <path> [--commit] [--actor NAME]`.
+  For `customers`, `<ENV_VAR>` must point at a privileged connection string
+  (see above) — the existing 3 other importers still work fine under
+  `collision_app`-level access.
 - **Verified by real execution against Neon staging** (not just unit
   tests): seeded two test `platform.person` rows, then ran all four CSV
   importers end-to-end (customers → vehicles → jobs → cost_entries) in

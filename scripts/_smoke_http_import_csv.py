@@ -137,16 +137,37 @@ def main():
         check("POST /import/customers commit status 200", r2.status_code == 200, (r2.status_code, r2.text))
         body2 = r2.json() if r2.status_code == 200 else {}
         check("commit reports dry_run=False", body2.get("dry_run") is False, body2)
-        check("commit reports created=1", body2.get("created") == 1, body2)
+        # Fixed 2026-09-05 (continuous-build cycle, import_customers_csv()
+        # identity-match swap): setup_person() already created a
+        # platform.person row with an exact-matching email, so
+        # match_or_create_and_link_customer() correctly reports
+        # match_status='attached' here, NOT 'created' -- 'created' only
+        # fires when the identity primitive genuinely creates a brand-new
+        # platform.person row, which this scenario never does. This was a
+        # real behavior change from the old raw-SELECT code path (which had
+        # no 'attached' concept at all); the old assertion here
+        # (`created == 1`) is stale, not a regression.
+        check("commit reports attached=1 (real person, not a new one)", body2.get("attached") == 1, body2)
 
         with db_cursor(env_var, autocommit=False) as cur:
             cur.execute("SELECT id FROM collision.customer WHERE person_id = %s", (person_id,))
             customer_row = cur.fetchone()
         check("commit actually created 1 customer row", customer_row is not None, customer_row)
 
-        # 3. Re-running the SAME commit=true import must be idempotent
-        #    (skip, not duplicate) -- this is the whole point of the
-        #    natural-key idempotency the module docstring promises.
+        # 3. Re-running the SAME commit=true import must be idempotent AT
+        #    THE DATABASE LEVEL (no duplicate collision.customer row) --
+        #    but NOT necessarily "skipped" in the report. Changed 2026-09-05
+        #    (continuous-build cycle, import_customers_csv() identity-match
+        #    swap): the old raw-SELECT code path had an explicit "customer
+        #    already exists -> skip" branch. The new code just calls
+        #    match_or_create_and_link_customer() again unconditionally --
+        #    which is itself idempotent (matches the same person by email,
+        #    then create_customer_for_existing_person() finds the existing
+        #    collision.customer row and returns it rather than duplicating)
+        #    -- so the SECOND run correctly reports match_status='attached'
+        #    again, not 'skipped'. Verifying the real invariant that
+        #    actually matters (still exactly 1 customer row after 2 runs),
+        #    not the old report-shape assertion.
         r3 = requests.post(
             f"{base_url}/import/customers",
             files={"file": ("customers.csv", customers_csv.encode("utf-8"), "text/csv")},
@@ -154,7 +175,15 @@ def main():
             timeout=10,
         )
         body3 = r3.json() if r3.status_code == 200 else {}
-        check("re-import is idempotent: skipped=1, created=0", body3.get("skipped") == 1 and body3.get("created") == 0, body3)
+        check(
+            "re-import reports attached=1 (idempotent match, not a skip-branch)",
+            body3.get("attached") == 1 and body3.get("created") == 0,
+            body3,
+        )
+        with db_cursor(env_var, autocommit=False) as cur:
+            cur.execute("SELECT count(*) AS n FROM collision.customer WHERE person_id = %s", (person_id,))
+            n_customer_rows = cur.fetchone()["n"]
+        check("re-import did NOT duplicate the collision.customer row", n_customer_rows == 1, n_customer_rows)
 
         # 4. vehicles.csv commit -- links a vehicle to the now-existing customer.
         vehicles_csv = f"customer_email,vin,make,model,year\n{PERSON_EMAIL},{VIN},Honda,Civic,2020\n"

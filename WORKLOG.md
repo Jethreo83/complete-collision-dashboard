@@ -3060,3 +3060,113 @@ match_or_create_and_link_customer() (now proven by 2 real consumers);
 same open Jed-blocked items as every prior cycle otherwise.
 
 
+2026-09-05 (continuous-build cron cycle: csv_import.py customers.csv
+identity-match swap)
+-------------------------------------------------------------------------
+Picked up exactly where the prior cycle's "Next up" left off: swapped
+app/csv_import.py's import_customers_csv() from a raw exact-normalized-
+email `platform.person` SELECT over to the real identity primitive
+(app.repository.match_or_create_and_link_customer()) that POST
+/customers/intake and POST /staff/intake already use -- closing the last
+Phase 1 write path that still bypassed platform.match_or_create_person().
+
+FILES MODIFIED
+--------------
+- app/csv_import.py -- import_customers_csv() rewritten:
+  first_name/last_name now REQUIRED (previously only email was), email/
+  phone normalized via app.normalize before the call (matching the API
+  routes' convention), source validated against
+  app.models.VALID_CUSTOMER_SOURCES up front. ImportReport gained two new
+  counters (attached/queued) plus queued_details (human-readable lines
+  with queue_id) -- plain created/updated/skipped can't represent the
+  identity primitive's 3-way match_status outcome. Dry-run no longer
+  calls the repository AT ALL (the real call can itself write a queue row
+  or a new person row on some outcomes -- not something a dry run may
+  do); it only validates row shape and reports how many rows WOULD be
+  submitted. Updated module docstring: this import now REQUIRES A
+  PRIVILEGED CONNECTION (same requirement create_person_and_customer()
+  always had, now actually true for customers.csv too, not just the
+  admin-script path).
+- app/api.py -- POST /import/{kind} now takes BOTH get_cursor() and
+  get_privileged_cursor() as Depends() params and picks privileged_cur
+  only for kind="customers" (vehicles/jobs/costs keep using the ordinary
+  cursor). REAL BUG FOUND: this route always used Depends(get_cursor)
+  regardless of kind, which was harmless only because the two dependency
+  functions happen to be byte-identical today -- get_privileged_cursor()'s
+  own docstring explicitly warns this is not guaranteed to stay true.
+  Fixed rather than left as a coincidence, now that kind="customers"
+  genuinely needs the privileged one. Kept both as Depends() (not called
+  directly) so test_api.py's existing dependency_overrides for both
+  functions keep working without change. Also added attached/queued/
+  queued_details fields (default 0/0/[]) to ImportReportOut and wired
+  _report_to_out() to populate them -- without this, the new counters
+  the module now tracks were silently dropped at the HTTP boundary
+  (found by the real end-to-end run below, not by pytest, since
+  test_api.py's mocked ImportReport objects never exercised pydantic
+  serialization of the real dataclass shape).
+- test_csv_import.py -- replaced the 5 old import_customers_csv tests
+  (dry-run/commit/missing-email/person-not-found/existing-customer) with
+  6 new ones matching the real match_or_create_and_link_customer()
+  contract (dry-run-never-calls-repo, attached/created/queued outcomes,
+  missing-last-name error, bad-source error) using a new
+  repo_module_result() helper that builds a real
+  app.repository.CustomerIntakeResult (not a bare MagicMock), same
+  discipline test_api.py's test_intake_customer_* tests already use.
+- scripts/_smoke_http_import_csv.py -- fixed 3 stale assertions that
+  assumed the old report shape (expected created=1/skipped=1 on rows
+  that now correctly report attached=1, since the identity primitive
+  distinguishes "matched an existing person" from "created a genuinely
+  new one" -- the old raw-SELECT code had no such distinction). Replaced
+  the report-shape idempotency check with the actual invariant that
+  matters (still exactly 1 collision.customer row after 2 identical
+  commits), verified by direct query, not just trusting the report body.
+- README.md -- updated app/csv_import.py and scripts/csv_import_cli.py
+  description to reflect the new privileged-connection requirement and
+  identity-match behavior (was stale: still described the old "links
+  existing people found by email" behavior).
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+`python -m pytest`: 179/179 (was 178; net +1 after replacing 5 tests with
+6). Each file's own __main__ runner independently: test_api.py 97/97,
+test_csv_import.py 38/38 (was 37; +1 new test).
+
+REAL END-TO-END HTTP VERIFICATION AGAINST STAGING (not just mocked
+pytest): pulled a fresh neondb_owner-role connection string for the
+staging branch via `neonctl connection-string --branch-id
+br-broad-hat-a5uyz6he --role-name neondb_owner`, started a real uvicorn
+process (COLLISION_DB_ENV_VAR pointed at it), ran
+scripts/_smoke_http_import_csv.py for real over HTTP:
+  - First full run caught 2 real bugs this cycle's unit tests couldn't
+    see: (1) the ImportReportOut/_report_to_out() gap above -- pydantic
+    silently dropped attached/queued/queued_details from every HTTP
+    response until fixed; (2) the smoke script's own 2 stale assertions
+    (fixed above).
+  - After both fixes: full 20-check run, ALL PASSED, including a fresh
+    person->customer->vehicle->job chain created and independently
+    verified by direct SQL query, plus 0 leftover rows confirmed by
+    cleanup+verify_clean().
+  - Additionally hand-verified the 'created' branch specifically (not
+    exercised by the smoke script's fixture, which always pre-seeds an
+    existing person): POSTed a brand-new email via curl, got back
+    created=1/attached=0 correctly, confirmed the new platform.person
+    row existed by direct query, then deleted it (person + customer rows)
+    and re-confirmed 0 remaining rows -- narrowly targeted cleanup, not a
+    blanket delete.
+vehicles.csv/jobs.csv/cost_entries.csv importers untouched and confirmed
+still passing both in pytest and over real HTTP -- only
+import_customers_csv()'s internals changed.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- data/templates/customers.csv already had first_name/last_name/email/
+  phone/source columns -- no template change needed, confirmed by reading
+  it before assuming.
+- Same CCC ONE license question / migration 011 payment_source enum /
+  migration 006 cost-category review / gross_revenue audit-trail design
+  blockers as every prior cycle, unchanged, all still awaiting Jed.
+
+Next up: same Jed-blocked items as every prior cycle. No other
+"csv_import.py identity-match" follow-up items remain open -- this closes
+the last Phase 1 write path that bypassed platform.match_or_create_person().
+

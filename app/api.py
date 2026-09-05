@@ -172,13 +172,23 @@ class RecalculateRequest(BaseModel):
 
 class ImportReportOut(BaseModel):
     """Mirrors app.csv_import.ImportReport (dataclass -> pydantic, plus a
-    computed `ok` bool since ImportReport.ok() is a method, not a field)."""
+    computed `ok` bool since ImportReport.ok() is a method, not a field).
+    attached/queued/queued_details added 2026-09-05 (continuous-build
+    cycle): the two extra outcomes import_customers_csv() can now report
+    since it goes through match_or_create_and_link_customer() -- see that
+    dataclass's own field comments for what each one means. Defaulted to
+    0/0/[] rather than made non-optional so this response model still
+    fits vehicles.csv/jobs.csv/cost_entries.csv reports, which never
+    populate them."""
     file: str
     dry_run: bool
     total_rows: int
     created: int
     updated: int
     skipped: int
+    attached: int = 0
+    queued: int = 0
+    queued_details: list[str] = []
     errors: list[str]
     ok: bool
 
@@ -590,6 +600,7 @@ def _report_to_out(r) -> ImportReportOut:
     return ImportReportOut(
         file=r.file, dry_run=r.dry_run, total_rows=r.total_rows,
         created=r.created, updated=r.updated, skipped=r.skipped,
+        attached=r.attached, queued=r.queued, queued_details=r.queued_details,
         errors=r.errors, ok=r.ok(),
     )
 
@@ -1388,13 +1399,52 @@ async def import_csv(
     actor: str = Form(...),
     commit: bool = Form(False),
     cur=Depends(get_cursor),
+    privileged_cur=Depends(get_privileged_cursor),
 ):
+    """Thin wrapper over app.csv_import's importer functions (see that
+    module's docstring for CSV formats).
+
+    *** CURSOR CHOICE (fixed 2026-09-05 continuous-build cycle): kind=
+    "customers" now explicitly uses privileged_cur (get_privileged_cursor()),
+    not cur (get_cursor()). *** Before this fix, this route always used
+    Depends(get_cursor) regardless of kind -- harmless ONLY because
+    get_cursor()/get_privileged_cursor() happen to be byte-identical
+    today (both just `db.cursor(get_db_env_var())`, see either
+    docstring). That accidental correctness would have broken silently
+    and specifically for CSV customer imports (raising a raw,
+    unhelpful psycopg2.errors.InsufficientPrivilege deep inside
+    match_or_create_and_link_customer()) the moment get_cursor() starts
+    pinning a lower-privileged role -- a change get_privileged_cursor()'s
+    own docstring explicitly anticipates and warns about. Both are taken
+    as FastAPI Depends() params (not called directly) so
+    test_api.py's existing app.dependency_overrides[get_cursor]/
+    [get_privileged_cursor] overrides keep working unchanged -- calling
+    either generator function directly here would bypass those test
+    overrides and try to open a real DB connection. Not a live bug today
+    (nothing pins a role yet), but worth fixing now rather than relying
+    on the two functions staying identical by coincidence: vehicles/jobs/
+    costs import still use the ordinary cursor; only customers (which now
+    calls match_or_create_and_link_customer(), same as POST
+    /customers/intake) needs the privileged one.
+
+    Known tradeoff, not fixed this pass: FastAPI resolves ALL declared
+    Depends() eagerly before the route body runs, so this route now opens
+    BOTH cur and privileged_cur on every call (including vehicles/jobs/
+    costs imports that only ever use one of them) rather than just the one
+    actually needed — an extra, unused, but harmless connection open+close
+    per non-customer import request. Acceptable for now: this route is not
+    deployed anywhere externally yet (see module docstring), and the two
+    dependencies are documented as functionally identical today. Flagging
+    rather than restructuring into a lazy-dependency pattern, which would
+    add real complexity to fix a cost that's currently zero-risk.
+    """
     if kind not in IMPORTERS:
         raise HTTPException(
             status_code=400,
             detail=f"kind={kind!r} must be one of {sorted(IMPORTERS.keys())}",
         )
     importer = IMPORTERS[kind]
+    active_cur = privileged_cur if kind == "customers" else cur
     contents = await file.read()
     tmp_path = None
     try:
@@ -1403,7 +1453,7 @@ async def import_csv(
         ) as tmp:
             tmp.write(contents)
             tmp_path = tmp.name
-        report = importer(cur, tmp_path, actor, dry_run=not commit)
+        report = importer(active_cur, tmp_path, actor, dry_run=not commit)
     finally:
         if tmp_path is not None:
             try:
