@@ -2133,6 +2133,104 @@ field for real pagination UI once a frontend is prioritized; same CCC
 ONE blockers as always.
 
 
+2026-09-04 (cron cycle, continuous-build — collision.payment)
+------------------------------------------------------------------
+Re-checked git log/fetch/status first: clean, up to date with
+origin/main, no concurrent-session drift, no uncommitted edits left by
+a prior unattended run. Re-verified staging AND production schema
+state by direct query against both branches before touching anything
+(scripts/check_state.sql) -- both confirmed to match migrations
+001-010 exactly (10 collision.* tables, 0 job rows, collision_app role
+present).
+
+Picked the next real gap flagged explicitly in this project's own
+docs rather than guessing at unbuilt architecture: docs/
+SHARED_CONVENTIONS_NOTE.md convention #5 ("Payments -- one table
+shape, accounting_sync_ref reserved for later. Not yet built for
+Complete Collision") and COMPLETE_COLLISION_HANDOFF_2026-09-03.md §2.3
+("payment -- shared shape (Elektrica §1.6); migrate cc_payment_audit.
+json and cc_payment_tracking.json with provenance") both flag `payment`
+as a real, specified, not-yet-built entity. CC-6 (ADR-001 §3, Confirmed)
+gives the exact behavior: "payments recorded/made via API show live in
+the dashboard; QuickBooks sync is a later, additive step." This is
+schema work with an existing spec to build against, not a speculative
+guess -- the right next item per the continuous-build instruction.
+
+FILES CREATED
+-------------
+migrations/011_collision_payment.sql
+  collision.payment (job_id FK, source enum, external_transaction_id,
+  amount, received_at, accounting_sync_ref reserved-nullable) +
+  collision.job_payment_summary view (per-job total_collected/
+  payment_count/last_payment_at). Shape mirrors elektrica-dashboard-ref's
+  migrations/008_elektrica_payment_toll_compliance.sql's elektrica.
+  payment field-for-field per convention #5's "one table shape" --
+  rental_id swapped for job_id (this project's RO spine), no
+  demand_id-equivalent column (Complete Collision has no analogous
+  "demand" entity; adjuster disputes live on collision.job.posture
+  instead). Append-only via REVOKE DELETE/UPDATE + a forbid-mutation
+  trigger, same pattern as collision.job_event/cost_entry/estimate and
+  elektrica.payment.
+
+  FLAGGED ASSUMPTION FOR JED (in the migration's own header, not
+  hidden): the payment_source enum (authorize_net | check |
+  insurer_eft | manual) is copied verbatim from Elektrica's enum
+  because the handoff says "shared shape" -- it does NOT independently
+  confirm Complete Collision actually uses Authorize.net specifically.
+  Held on staging only pending Jed's confirmation, same posture as
+  migration 006's cost_category taxonomy question -- NOT promoted to
+  production this cycle.
+
+scripts/verify_011.sql
+  6-check verification harness, same discipline as verify_001-010:
+  real INSERTs under SET ROLE collision_app, not just catalog checks.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- Applied migrations/011_collision_payment.sql to STAGING only via
+  scripts/run_sql.py -- COMMITTED, no errors.
+- Ran scripts/verify_011.sql against staging: CHECK 1 (zero-payment job
+  shows 0/0/NULL in the summary view, not omitted), CHECK 2-3 (real
+  INSERTs accumulate correctly in job_payment_summary: 250.00/1 then
+  750.00/2), CHECK 4 (authorize_net payment missing
+  external_transaction_id genuinely REJECTED by the CHECK constraint --
+  real check_violation, not just documented), CHECK 5-6 (collision_app
+  genuinely blocked from UPDATE and DELETE on an existing payment row --
+  real insufficient_privilege/raise_exception, not just "the app
+  doesn't happen to try it") -- all 6 passed by real output.
+- First run of verify_011.sql's original cleanup step failed for real
+  (the forbid-mutation trigger fires for EVERY role including the
+  connecting admin role, not just collision_app -- a genuine stronger
+  guarantee than initially assumed while writing the script). Fixed by
+  temporarily disabling the trigger for cleanup only, re-enabling
+  immediately after; re-ran clean, 6/6 passed.
+- Independently re-verified 0 collision.payment rows and 0 collision.job
+  rows remaining on staging via a separate rolled-back query
+  (scripts/run_sql.py ... --rollback), not just trusting the verify
+  script's own internal cleanup.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 011 NOT promoted to production -- payment_source enum
+  needs Jed's confirmation first (see flagged assumption above).
+- No app/repository.py or app/api.py code added yet for
+  collision.payment (create_payment(), GET /jobs/{ro}/payments, etc.)
+  -- deliberately sequenced after the schema question is resolved,
+  same order as every other migration in this repo (schema first,
+  verified, THEN app layer).
+- Real migration of cc_payment_audit.json / cc_payment_tracking.json
+  content -- still blocked on export access to "the mini" (unchanged).
+- Migration 006/010 promotion status unchanged (already live on
+  production, not re-touched this cycle).
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+
+Next up: once Jed confirms (or corrects) the payment_source enum,
+promote migration 011 to production and build the app-layer
+create_payment()/GET /jobs/{ro}/payments route; gross_revenue
+post-intake edit audit-trail design also still needs Jed's input.
+
+
 
 
 

@@ -5,6 +5,37 @@ Purpose: quick-scan index of what changed and why, for Jed's review
 without re-reading full transcripts. Full narrative/verification detail
 lives in WORKLOG.md; this file is the compact pointer into it.
 
+Session: 2026-09-04 (cron cycle, continuous-build — migrations/011_collision_payment.sql: collision.payment table + view, staging only)
+
+FILES CREATED
+-------------
+migrations/011_collision_payment.sql — collision.payment (job_id FK,
+source enum, external_transaction_id, amount, accounting_sync_ref
+reserved) + collision.job_payment_summary view. Mirrors elektrica.
+payment's shape per shared-conventions #5, adapted (job_id not
+rental_id, no demand_id-equivalent). FLAGGED: payment_source enum
+(authorize_net/check/insurer_eft/manual) copied from Elektrica, not
+independently confirmed for Complete Collision — held on staging
+pending Jed's confirmation, NOT promoted to production.
+scripts/verify_011.sql — 6-check harness, real execution against
+staging: 6/6 passed (accumulation correct, CHECK constraint genuinely
+rejects authorize_net w/o txn id, append-only genuinely enforced via
+UPDATE/DELETE both blocked for real). Independently re-verified 0
+rows remain on staging afterward.
+
+FILES MODIFIED
+--------------
+README.md — new "Open questions" entry (payment_source enum) +
+"Not yet built" entry (migration 011 promotion pending).
+WORKLOG.md — full session narrative incl. a real cleanup-script bug
+found and fixed (forbid-mutation trigger fires for every role, not
+just collision_app — had to disable/re-enable it for cleanup).
+
+Next up: Jed's confirmation on payment_source enum values, then
+promote migration 011 + build create_payment()/GET /jobs/{ro}/payments;
+gross_revenue post-intake edit audit-trail design still open.
+
+
 Session: 2026-09-07 (cron cycle, continuous-build — RO intake HTTP route,
 POST /jobs, plus a real 500->400 bug found and fixed via HTTP smoke test)
 

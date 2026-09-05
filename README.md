@@ -500,8 +500,22 @@ rather than trusting an earlier verification run if any time has passed
 
 See `docs/ADR-001-complete-collision.md` §6.
 
+- **Migration 011 payment_source enum** (`authorize_net | check |
+  insurer_eft | manual`) — copied verbatim from
+  `elektrica.payment_source` per shared-conventions #5 ("one table
+  shape"), but this only confirms the shape, not that Complete
+  Collision actually processes card payments through Authorize.net
+  specifically. Held on staging pending Jed's confirmation of the real
+  payment source list, same posture as migration 006's cost_category
+  taxonomy. See `migrations/011_collision_payment.sql` header.
+
 ## Not yet built
 
+- **Migration 011 promotion** (`collision.payment`,
+  `collision.job_payment_summary`) — written and verified on staging
+  (6/6 checks passed, see WORKLOG.md 2026-09-04 entry), NOT promoted to
+  production — awaiting Jed's confirmation of the `payment_source` enum
+  values (see "Open questions" above).
 - **Migration 006 review** (`collision.site`, `collision.cost_entry`,
   written by a separate concurrent session — see WORKLOG.md's
   2026-09-04 "concurrent-session collision" entry) — awaiting Jed's
