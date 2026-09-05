@@ -109,6 +109,41 @@ def main():
         names4 = {s["name"] for s in r4.json()} if r4.status_code == 200 else set()
         check("GET /sites?active_only=true includes active fixture", SITE_NAME_A in names4, names4)
         check("GET /sites?active_only=true excludes inactive fixture", SITE_NAME_B not in names4, names4)
+
+        # 5. PATCH /sites/{id}/active -- real deactivate of the (previously
+        #    active) fixture A, through the actual HTTP route + repository
+        #    write (2026-09 continuous-build cycle: closes the WORKLOG-
+        #    tracked "no PATCH /sites/{id}" gap).
+        r5 = requests.patch(
+            f"{base_url}/sites/{site_a_id}/active",
+            json={"active": False, "actor": ACTOR},
+            timeout=10,
+        )
+        check("PATCH /sites/{id}/active deactivate status 200", r5.status_code == 200, (r5.status_code, r5.text))
+        body5 = r5.json() if r5.status_code == 200 else {}
+        check("PATCH /sites/{id}/active deactivate value", body5.get("active") is False, body5)
+
+        # 6. Confirm it actually persisted, not just an echoed response --
+        #    a fresh GET must also show it deactivated.
+        r6 = requests.get(f"{base_url}/sites/{site_a_id}", timeout=10)
+        check("GET /sites/{id} after PATCH reflects deactivation", r6.status_code == 200 and r6.json().get("active") is False, r6.text)
+
+        # 7. PATCH back to active=True -- round-trip re-activation works too.
+        r7 = requests.patch(
+            f"{base_url}/sites/{site_a_id}/active",
+            json={"active": True, "actor": ACTOR},
+            timeout=10,
+        )
+        check("PATCH /sites/{id}/active reactivate status 200", r7.status_code == 200, (r7.status_code, r7.text))
+        check("PATCH /sites/{id}/active reactivate value", r7.json().get("active") is True, r7.text)
+
+        # 8. PATCH against an unknown site id -> real 404, not a 500.
+        r8 = requests.patch(
+            f"{base_url}/sites/999999999/active",
+            json={"active": True, "actor": ACTOR},
+            timeout=10,
+        )
+        check("PATCH /sites/{id}/active unknown id returns 404", r8.status_code == 404, (r8.status_code, r8.text))
     finally:
         if site_a_id is not None:
             cleanup(env_var, site_a_id, site_b_id)
@@ -118,7 +153,7 @@ def main():
         print(f"\nFAILURES: {FAILED}")
         sys.exit(1)
     else:
-        print(f"\nAll checks passed (9/9)")
+        print(f"\nAll checks passed (18/18)")
 
 
 if __name__ == "__main__":

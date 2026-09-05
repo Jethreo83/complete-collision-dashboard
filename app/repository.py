@@ -97,6 +97,34 @@ def list_sites(cur, active_only: bool = False) -> list[Site]:
     return [_site_from_row(row) for row in cur.fetchall()]
 
 
+def set_site_active(cur, site_id: int, active: bool, actor: str) -> Site:
+    """Flip a site's active flag -- soft activate/deactivate, same pattern
+    as set_staff_user_active(). No hard DELETE path for sites, matching
+    the append-only/no-hard-delete discipline used elsewhere in this
+    schema (WORKLOG's tracked gap: "no PATCH /sites/{id} ... to
+    deactivate a site from the dashboard"). collision.site has no
+    updated_at/updated_by columns (migrations/006 only defines
+    created_at/created_by), so this UPDATE only touches `active` --
+    unlike set_staff_user_active() there is no updated_at/updated_by to
+    stamp. `actor` is still required for call-site consistency with every
+    other write function in this module even though it is not currently
+    persisted; if Jed wants an audit trail on site changes, that is a
+    migration adding those columns, not a code-only fix."""
+    cur.execute(
+        """
+        UPDATE collision.site
+        SET active = %s
+        WHERE id = %s
+        RETURNING *
+        """,
+        (active, site_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"no site with id={site_id!r}")
+    return _site_from_row(row)
+
+
 # ---------------------------------------------------------------------------
 # Customer
 # ---------------------------------------------------------------------------

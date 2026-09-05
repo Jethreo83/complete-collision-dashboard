@@ -5,6 +5,30 @@ Purpose: quick-scan index of what changed and why, for Jed's review
 without re-reading full transcripts. Full narrative/verification detail
 lives in WORKLOG.md; this file is the compact pointer into it.
 
+Session: 2026-09-08 (cron cycle, continuous-build — PATCH /sites/{id}/active,
+completing work left uncommitted by an interrupted prior cycle)
+
+FILES MODIFIED
+--------------
+app/repository.py — set_site_active() (soft activate/deactivate, no
+audit columns exist yet on collision.site).
+app/api.py — PATCH /sites/{id}/active (SiteActiveRequest body).
+scripts/_smoke_http_sites.py — extended 9→18 real HTTP checks.
+test_api.py — 2 new tests, full suite 158/158.
+README.md, WORKLOG.md — new dated entries.
+
+VERIFICATION: real staging uvicorn run, 18/18 HTTP checks passed
+(deactivate, persisted-not-echoed confirm, reactivate, 404-unknown-id),
+cleanup independently re-verified 0 rows, uvicorn killed + confirmed
+stopped, staging re-checked clean after (customer_count 0, same schema).
+Committed to origin/main.
+
+Next up: no new buildable gap found beyond existing tracked items — still
+awaiting Jed on payment_source enum (migration 011), migration 006
+cost-category review, gross_revenue audit-trail design, CCC ONE license
+question.
+
+
 Session: 2026-09-04 (cron cycle, continuous-build — migrations/011_collision_payment.sql: collision.payment table + view, staging only)
 
 FILES CREATED

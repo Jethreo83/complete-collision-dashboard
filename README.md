@@ -646,6 +646,22 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
+- **PATCH /sites/{id}/active (2026-09-08, this cron cycle):** Added
+  `app.repository.set_site_active()` + `PATCH /sites/{id}/active` (soft
+  activate/deactivate, `{active, actor}` body, 404 on unknown id) —
+  closes the WORKLOG-tracked gap ("no PATCH /sites/{id} ... to
+  deactivate a site from the dashboard"). Same pattern as
+  `POST /staff/{email}/active`: no hard DELETE, `actor` required for
+  call-site consistency though not yet persisted (no `updated_at`/
+  `updated_by` columns on `collision.site` — migration territory if
+  Jed wants that audit trail). 2 new tests in `test_api.py` (deactivate
+  happy path, unknown-id 404); full suite 158/158 (up from 156/156).
+  Verified by real HTTP execution against staging:
+  `scripts/_smoke_http_sites.py` extended with 9 new checks (deactivate,
+  persisted-not-just-echoed confirmation via fresh GET, reactivate
+  round-trip, unknown-id 404) — 18/18 total passed. Still gated on
+  migration 006 (staging only, same as every other `collision.site`
+  route).
 - **Content library app layer (2026-09-05, this cron cycle):**
   `collision.content_item` (migrations/005) has been live in
   **production** since 2026-09-04 but had zero readers/writers until

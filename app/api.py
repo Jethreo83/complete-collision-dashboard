@@ -339,6 +339,14 @@ class StaffActiveRequest(BaseModel):
     actor: str
 
 
+class SiteActiveRequest(BaseModel):
+    """Body for PATCH /sites/{id} -- same shape as StaffActiveRequest
+    (activate/deactivate + actor), closing the WORKLOG-tracked gap: "no
+    PATCH /sites/{id} (e.g. to deactivate a site from the dashboard)"."""
+    active: bool
+    actor: str
+
+
 class EstimateCreateRequest(BaseModel):
     """Phase 1 manual-entry only, same rule as every other write path in
     this repo -- content is whatever CCC ONE PDF/printout data was typed
@@ -868,9 +876,13 @@ def get_customer_vehicles(customer_id: int, cur=Depends(get_cursor)):
 # Sites (migrations/006, STAGING ONLY -- collision.site not yet promoted
 # to production; see README's "Open questions" for the pending migration
 # 006 cost-category review, a separate question from this table's shape).
-# Read-only routes -- site rows are still only created via
-# get_or_create_site()'s find-or-create path (POST /jobs, CSV importers),
-# not via a dedicated POST /sites here.
+# Site rows are still only CREATED via get_or_create_site()'s
+# find-or-create path (POST /jobs, CSV importers) -- no dedicated
+# POST /sites here. PATCH /sites/{id}/active below adds the one write
+# path this table needed beyond that (soft activate/deactivate, closing
+# the WORKLOG-tracked "no PATCH /sites/{id}" gap), same pattern as
+# POST /staff/{email}/active -- no hard DELETE, matching the
+# append-only/no-hard-delete discipline used elsewhere in this schema.
 # ---------------------------------------------------------------------------
 
 @app.get("/sites", response_model=list[SiteOut])
@@ -883,6 +895,15 @@ def get_site(site_id: int, cur=Depends(get_cursor)):
     site = repo.get_site_by_id(cur, site_id)
     if site is None:
         raise HTTPException(status_code=404, detail=f"No site with id={site_id!r}")
+    return _site_to_out(site)
+
+
+@app.patch("/sites/{site_id}/active", response_model=SiteOut)
+def set_site_active_route(site_id: int, body: SiteActiveRequest, cur=Depends(get_cursor)):
+    try:
+        site = repo.set_site_active(cur, site_id, body.active, body.actor)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return _site_to_out(site)
 
 

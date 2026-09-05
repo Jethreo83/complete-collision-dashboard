@@ -2755,4 +2755,82 @@ audit-trail / PATCH /sites items as every prior cycle, all still
 awaiting Jed.
 
 
+Session: 2026-09-08 cron cycle (continuous-build -- PATCH /sites/{id}/active,
+closing the WORKLOG-tracked "no PATCH /sites/{id}" gap)
+
+FILES MODIFIED
+--------------
+app/repository.py -- Added set_site_active(site_id, active, actor): soft
+activate/deactivate UPDATE, RETURNING *, raises ValueError on unknown id.
+No updated_at/updated_by columns exist on collision.site (migration
+territory, not code-only) so `actor` is accepted for call-site consistency
+with every other write function in this module but not yet persisted --
+flagged in the docstring.
+app/api.py -- Added SiteActiveRequest (active: bool, actor: str) and
+PATCH /sites/{id}/active. Same no-hard-delete pattern as
+POST /staff/{email}/active. Still gated on migration 006 (collision.site,
+STAGING ONLY) same as GET /sites/GET /sites/{id}.
+scripts/_smoke_http_sites.py -- extended with 9 new real HTTP checks:
+deactivate via PATCH, confirmed persisted (not just echoed) via a fresh
+GET, reactivate round-trip, unknown-id -> 404. 18/18 total (up from 9/9).
+test_api.py -- 2 new tests (deactivate happy path, unknown-id 404 via
+mocked ValueError). Full suite 158/158 (up from 156/156).
+README.md -- new "Not yet built" entry documenting the above.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first: no concurrent commits since 7c153f1;
+  found uncommitted working-tree changes for exactly this feature already
+  in progress from an interrupted prior cycle (the immediately preceding
+  cron run failed with `RuntimeError: expected value at line 1 column 13`
+  before committing) -- reviewed the diff, it matched this session's
+  intended scope exactly, so continued and completed it rather than
+  discarding and restarting.
+- Full pytest suite: 158/158, no regressions.
+- Real staging connection retrieved via `neon connection-string staging
+  --project-id aged-art-92489373 --role-name neondb_owner --extended`;
+  confirmed host ep-bold-leaf-a5dr4amg (staging), not production, before
+  use.
+- scripts/check_state.sql run against staging BEFORE starting: confirmed
+  migrations 001-011 all present (collision.site included), customer_count
+  0 -- clean baseline, no other track's test data left behind.
+- Killed a stray uvicorn process (PID 317232) found already LISTENING on
+  :8010 from an earlier interrupted run before starting a fresh one --
+  confirmed via netstat, taskkill /F, re-verified stopped.
+- Started a real uvicorn process against staging (COLLISION_DB_ENV_VAR ->
+  CC_STAGING_DB_URL), confirmed /health 200 via curl.
+- scripts/_smoke_http_sites.py run against the live server: 18/18 real
+  HTTP checks passed, including the 9 new PATCH-route checks (deactivate,
+  fresh-GET-confirms-persistence, reactivate, 404-on-unknown-id). Cleanup
+  by explicit fixture-name match, independently re-verified 0 site rows
+  remaining via a separate follow-up query after the script's own
+  internal check.
+- uvicorn killed by its real LISTENING PID (netstat), confirmed stopped
+  via a timed-out curl (000) + a follow-up netstat showing no LISTENING
+  entry on :8010.
+- Re-ran scripts/check_state.sql against staging after cleanup: still
+  customer_count 0, same table/type list as before -- staging left in the
+  same state it started in.
+- Committed to origin/main.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No updated_at/updated_by audit-trail columns on collision.site --
+  `actor` param exists in set_site_active() but isn't persisted; adding
+  that is a migration, not a code change, and wasn't asked for.
+- Migration 006 (collision.site itself) still staging-only, unchanged --
+  this cycle only extended the app layer built on top of it.
+- Same CCC ONE / payment_source enum (migration 011) / gross_revenue
+  audit-trail / migration 006 cost-category review blockers as every
+  prior cycle, all still awaiting Jed's input, unchanged.
+
+Next up: same open items as every prior cycle (payment_source enum
+confirmation to unblock migration 011 promotion, migration 006
+cost-category review, gross_revenue post-intake edit audit-trail design,
+CCC ONE license question) -- all still awaiting Jed. No new buildable
+gap identified this cycle beyond what's already tracked; next session
+should re-scan README's "Not yet built" list for the next unblocked item
+if Jed hasn't responded to any of the above.
+
+
 

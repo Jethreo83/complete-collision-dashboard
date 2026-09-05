@@ -679,6 +679,25 @@ def test_get_site_not_found():
     check("test_get_site_not_found", r.status_code == 404)
 
 
+def test_set_site_active_deactivate():
+    deactivated = _sample_site(active=False)
+    with patch("app.api.repo.set_site_active", return_value=deactivated) as m:
+        r = client.patch("/sites/1/active", json={"active": False, "actor": "jed"})
+    check("test_set_site_active_deactivate_status", r.status_code == 200, r.text)
+    check("test_set_site_active_deactivate_value", r.json()["active"] is False)
+    check(
+        "test_set_site_active_deactivate_args",
+        m.call_args.args[1:] == (1, False, "jed") or m.call_args.kwargs.get("actor") == "jed",
+        m.call_args,
+    )
+
+
+def test_set_site_active_unknown_returns_404():
+    with patch("app.api.repo.set_site_active", side_effect=ValueError("no site with id=999")):
+        r = client.patch("/sites/999/active", json={"active": True, "actor": "jed"})
+    check("test_set_site_active_unknown_returns_404", r.status_code == 404, r.text)
+
+
 # ---------------------------------------------------------------------------
 # Content library routes (2026-09-05 cron cycle -- collision.content_item
 # app layer, closing the gap flagged since migrations/005 went to
@@ -1076,6 +1095,9 @@ if __name__ == "__main__":
         test_get_customer_by_person_found, test_get_customer_by_person_not_found,
         test_get_customer_vehicles, test_get_customer_vehicles_empty,
         test_get_vehicle_by_vin_found, test_get_vehicle_by_vin_not_found,
+        test_list_sites, test_list_sites_active_only, test_list_sites_empty,
+        test_get_site_found, test_get_site_not_found,
+        test_set_site_active_deactivate, test_set_site_active_unknown_returns_404,
         test_create_content_item_success, test_create_content_item_missing_filename_returns_400,
         test_create_content_item_bad_uploaded_at_returns_400,
         test_get_content_item_found, test_get_content_item_not_found,
