@@ -3416,3 +3416,81 @@ specific person_match_queue resolution screen (still punted to
 Elektrica's admin surface on every intake screen's 'queued' outcome),
 or the migration 006/011 review once Jed weighs in.
 
+2026-09-05 (cron cycle -- fix fallout from same-day auth commit)
+
+git fetch/status clean at start (no concurrent drift; up to date with
+origin/main at 17ef649, "Build real authentication: shared-secret SSO
+per JWT_CONTRACT.md"). Ran the full test suite before touching
+anything, per standing discipline -- found it was NOT actually green:
+96 failed / 83 passed. Root cause: 17ef649 added a global
+enforce_staff_auth() middleware but never gave the test suite an
+escape hatch, so test_api.py's TestClient (dependency_overrides on
+get_cursor/get_privileged_cursor, no Authorization header at all)
+401'd on every single route before ever reaching the mocked repo.*
+call. `npm run build` was also broken (TS2339) -- StaffAdminPage.tsx
+still called useAuth().refreshStaffList, a method the same auth
+rewrite removed from AuthContextValue.
+
+FILES MODIFIED
+--------------
+app/api.py -- enforce_staff_auth() now honors COLLISION_DISABLE_AUTH=1
+as a test-only bypass (mirrors Elektrica's ELEKTRICA_DISABLE_AUTH
+exactly); corrected the module's own top docstring, which still
+claimed "no authentication yet" post-auth-commit.
+web/README.md -- rewrote the stale "no authentication" Auth section
+to describe the real JWT/?token=.../GET /me flow.
+.env.example, web/.env.example -- documented JWT_SECRET,
+COLLISION_DISABLE_AUTH, and the frontend's ?token=... expectation
+(both files still described the pre-auth world).
+web/src/pages/StaffAdminPage.tsx -- removed the three dead
+refreshStaffList() call sites (load() already re-fetches the roster
+after provision/toggle; nothing lost).
+
+FILES CREATED
+-------------
+conftest.py -- sets COLLISION_DISABLE_AUTH=1 at collection time,
+literally mirroring Elektrica's conftest.py.
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+python -m pytest: 179/179 (up from 96 failed/83 passed). python
+test_api.py direct run: 97/97, matching pytest's count exactly.
+npm run build (tsc -b && vite build) from web/: clean, no errors
+(was failing with TS2339 before the fix).
+Real HTTP verification against staging: confirmed branch via `neon
+branches list --project-id aged-art-92489373` (ep-bold-leaf staging,
+not ep-damp-bird production -- the shell's exported DATABASE_URL was
+pointed at production as usual, per the standing gotcha). Pulled the
+staging neondb_owner password via the Neon REST API reveal_password
+endpoint (CLI doesn't print it). Started a fresh uvicorn on :8011 with
+a throwaway JWT_SECRET. Confirmed: /health and /openapi.json stay
+public (200) even with the new middleware; unauthenticated GET /jobs
+-> 401; garbage-bearer GET /jobs -> 401; a real HS256 JWT (iss
+shell-dashboard, grants=[{business:collision}], google_email of an
+existing active owner staff_user) -> GET /me returns that exact staff
+record (200), GET /jobs -> 200. Killed the verification server by its
+real LISTENING pid via netstat, confirmed stopped via
+connection-refused curl + no LISTENING entry.
+Git hygiene note: the first commit attempt's message contained
+backticks that bash interpreted as command substitution before
+`git commit -m` ever saw them, silently embedding stray command
+output/errors into the committed message (already pushed by the time
+this was noticed). Fixed by amending with `git commit --amend -F
+<tmpfile>` (a plain file, no shell interpolation) and
+force-with-lease pushing the corrected message over the bad one --
+verified by re-fetching and reading back the new message in full.
+Lesson: never pass a commit message with backticks/$()/quotes
+through `-m` in this shell; always write it to a file first.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+Same CCC ONE license question / migration 011 payment_source
+confirmation / migration 006 cost-category review / gross_revenue
+audit-trail design blockers as every prior cycle, unchanged, all
+still awaiting Jed.
+
+Next up: same as prior cycle's "Next up" (Collision-specific
+person_match_queue resolution screen, or the migration 006/011 review
+once Jed weighs in) -- this cycle was entirely a fix-the-fallout
+cycle, no new feature surface added.
+
