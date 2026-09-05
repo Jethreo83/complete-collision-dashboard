@@ -2833,4 +2833,129 @@ should re-scan README's "Not yet built" list for the next unblocked item
 if Jed hasn't responded to any of the above.
 
 
+Session: 2026-09-05 cron cycle (continuous-build -- POST /customers/intake,
+the identity-service swap this codebase has been flagging since
+migration 001)
+
+FILES CREATED
+-------------
+app/normalize.py -- normalize_email() (lowercase+strip), normalize_phone()
+(digits-only, no US country-code stripping, same unconfirmed-against-
+real-data caveat as Elektrica's copy). Deliberately a LOCAL copy of
+Elektrica's app/normalize.py (identical logic, verified by direct read of
+their file), not a shared platform.* module -- their own docstring names
+Collision as the trigger for that extraction once it becomes a second
+real consumer; that trigger is now met but the cross-repo extraction
+itself is a decision for Jed, not done solo this cycle.
+test_normalize.py -- 12 tests, mirrors Elektrica's test_normalize.py
+exactly (same module, same test names).
+scripts/_smoke_http_customer_intake.py -- real HTTP smoke test.
+
+FILES MODIFIED
+--------------
+app/repository.py -- match_or_create_and_link_customer() + CustomerIntakeResult
+(three-way match_status: attached/created/queued). Calls
+platform.match_or_create_person() (SET ROLE platform_identity_service,
+RESET ROLE before touching collision.customer, same sequencing as
+Elektrica's match_or_create_and_link_renter()). 'queued' returns
+customer=None + a real queue_id; does NOT create a collision.customer row.
+app/api.py -- get_privileged_cursor() dependency (same env var as
+get_cursor(), no SET ROLE -- this repo's app/db.cursor() has no set_role
+param yet, unlike Elektrica's, so this is currently behaviorally
+identical to get_cursor() but named separately to document intent and
+survive future changes); CustomerIntakeRequest/CustomerIntakeOut models;
+POST /customers/intake route (normalizes email/phone via app.normalize
+before calling the repository function).
+test_api.py -- get_privileged_cursor added to the dependency-override
+list; 3 new tests (attached/created/queued, incl. asserting normalization
+happens before the repository call). Full suite 173/173 (up from 158/158).
+README.md -- new "Not yet built" entry documenting the above (kept the
+existing entries below it untouched, newest-first).
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first: working tree clean, no concurrent
+  drift, no uncommitted changes from an interrupted prior cycle.
+- Confirmed by direct query against real staging Postgres BEFORE writing
+  any code: platform.match_or_create_person() is a 7-arg SECURITY DEFINER
+  function (p_first_name, p_last_name, p_date_of_birth, p_email_normalized,
+  p_phone_normalized, p_source_project, p_submitted_by); EXECUTE granted
+  only to neondb_owner/platform_identity_service; collision_app has zero
+  pg_auth_members rows reaching either role (same access gap Elektrica's
+  own docstrings already document, now independently confirmed true for
+  Collision rather than assumed by analogy). Also read the function's
+  actual prosrc to confirm the exact match/queue/create branching logic
+  before writing the smoke test's expected outcomes.
+- Read platform.person_match_queue's real column list by direct query
+  before writing code that touches it.
+- Full pytest suite: 173/173 (up from 158/158), no regressions.
+  test_normalize.py standalone runner: 12/12.
+- Started a real uvicorn process against staging (COLLISION_DB_ENV_VAR ->
+  CC_STAGING_DB_URL), confirmed /health 200, confirmed real LISTENING PID
+  via netstat before use.
+- scripts/_smoke_http_customer_intake.py run against the live server:
+  19/19 real HTTP checks passed -- a real 'created' intake (brand-new
+  platform.person row), a second intake with the SAME email
+  (differently-cased/whitespaced, exercising normalize_email()) correctly
+  exact-matching to the SAME person_id ('attached', independently
+  confirmed by a follow-up query showing exactly 1 platform.person row
+  for the marker email, not 2 -- proves no duplicate was created), a
+  third intake with a DIFFERENT email but the same last_name+date_of_birth
+  correctly landing in platform.person_match_queue as 'queued' with NO
+  collision.customer row created (confirmed real source_project='collision',
+  status='pending', match_reason='name_dob_close_match' columns by direct
+  query, not just the API's own echo).
+- Cleanup by explicit marker-email/last_name match in FK-safe order
+  (person_match_queue -> collision.customer -> platform.person),
+  independently re-verified 0 rows remaining via a separate follow-up
+  query after the script's own internal check.
+- uvicorn killed by its real listening PID (netstat), confirmed stopped
+  via a timed-out curl (exit 7) + a follow-up netstat showing no
+  LISTENING entry on :8010.
+- Re-ran scripts/check_state.sql against staging after cleanup:
+  customer_count back to 1 (same as before this session started) --
+  staging left in the same state it started in.
+- Committed to origin/main.
+
+FOUND, NOT CAUSED, LEFT ALONE
+------------------------------
+- One pre-existing orphan collision.customer/platform.person row on
+  staging (email smoke.renter.elektrica@example.com, source='walk_in')
+  found while inspecting staging state before this session's own writes.
+  Does not match any marker this session used, and its provenance isn't
+  known to this session (name suggests a cross-business Elektrica-side
+  renter-to-customer smoke test, but no matching WORKLOG entry found by
+  search in this repo to confirm). NOT deleted -- flagged here rather
+  than guessed at or silently cleaned up, per this repo's own "no
+  blanket deletes, narrowly-targeted match only" discipline. Whoever
+  owns that fixture should clean it up or confirm it's intentional.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- create_person_and_customer() and provision_new_staff_user() still use
+  the raw INSERT path -- NOT swapped to match_or_create_and_link_customer()'s
+  underlying primitive in this pass, to keep this change minimal/reviewable.
+  Same for csv_import.py's customer/staff creation paths. A real follow-up,
+  not done speculatively.
+- No Collision-specific /person-match-queue admin route -- a queued
+  Collision customer is resolved today through Elektrica's existing
+  admin surface (same shared platform.* table, cross-business by design
+  per Jed's own Neon-project-sharing decision). Flagged as a possible gap
+  if Jed wants a Collision-native surface instead, not built speculatively.
+- Same CCC ONE / payment_source enum (migration 011) / migration 006
+  cost-category review / gross_revenue audit-trail blockers as every
+  prior cycle, unchanged, still awaiting Jed.
+- Migration 006 (collision.site) still staging-only, unchanged -- this
+  cycle didn't touch it.
+
+Next up: same open items as every prior cycle (payment_source enum
+confirmation, migration 006 cost-category review, gross_revenue
+audit-trail design, CCC ONE license question) -- all still awaiting Jed.
+New candidate for next cycle: swap create_person_and_customer()/
+provision_new_staff_user()/csv_import.py's person-creation paths over to
+the same match_or_create_person() primitive now that a real second
+consumer (this cycle's POST /customers/intake) proves the pattern works
+end-to-end for Collision.
+
+
 

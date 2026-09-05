@@ -646,6 +646,66 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
+- **POST /customers/intake -- the identity-service swap, closed (2026-09
+  cron cycle, this session):** `app.repository.match_or_create_and_link_customer()`
+  + `POST /customers/intake` close the gap `create_person_and_customer()`'s
+  docstring has flagged since migration 001 ("swap the raw INSERT for
+  `platform.match_or_create_person()` ... not urgent, next time you touch
+  those functions"). New local `app/normalize.py` (email lowercase+strip,
+  phone digits-only) -- same logic as Elektrica's copy (their docstring
+  explicitly named Collision as the second real consumer that would
+  trigger a shared-`platform.*` extraction; flagged here as that trigger
+  now being met, but the extraction itself is a cross-repo decision left
+  for Jed, not done solo). New `app.api.get_privileged_cursor()` FastAPI
+  dependency -- confirmed by direct query against real staging Postgres
+  this session: `platform.match_or_create_person()` (7-arg SECURITY
+  DEFINER) has EXECUTE granted only to `neondb_owner`/
+  `platform_identity_service`; `collision_app` has zero `pg_auth_members`
+  rows reaching either, same access gap Elektrica already documented and
+  worked around for the identical primitive -- confirmed true for
+  Collision too, not assumed by analogy. Modeled directly on Elektrica's
+  `match_or_create_and_link_renter()`/`get_privileged_cursor()`/
+  `RenterIntakeResult` (same repo family, same primitive, same
+  `SET ROLE platform_identity_service` / `RESET ROLE` sequencing, same
+  three-way `match_status` branch: `attached` | `created` | `queued`).
+  Does NOT touch `create_person_and_customer()`, `provision_new_staff_user()`,
+  or `csv_import.py` -- those keep their existing raw-INSERT path
+  unchanged; swapping them to the same primitive is a separate follow-up
+  (same "not urgent" framing carried since 2026-09-06), not done in this
+  pass to keep this change minimal and reviewable. New `queued` rows land
+  in the SAME `platform.person_match_queue` table Elektrica's confirm-
+  or-split admin action already resolves (`GET /person-match-queue/
+  pending`, `POST .../{id}/decision`, live-verified on that side) --
+  no Collision-specific admin route built; a queued Collision customer
+  is resolved through Elektrica's existing admin surface today (same
+  shared platform.* primitive, cross-business by design per this repo's
+  own Neon-project-sharing decision), unless Jed wants one duplicated
+  here. 12 new unit tests in `test_normalize.py` (mirrors Elektrica's
+  test file exactly, same module), 3 new tests in `test_api.py`
+  (attached/created/queued outcomes via mocked
+  `repo.match_or_create_and_link_customer`, incl. asserting email/phone
+  are normalized BEFORE reaching the repository call) -- full suite
+  173/173 (up from 158/158). Verified by **real HTTP execution** against
+  real staging Postgres: `scripts/_smoke_http_customer_intake.py`,
+  19/19 checks passed -- a real `created` intake, a second intake with
+  the same (differently-cased/whitespaced) email exact-matching to the
+  SAME `person_id` (`attached`, confirmed by direct follow-up query:
+  exactly 1 `platform.person` row for the marker email, not 2), a third
+  intake with a different email but the same `last_name`+`date_of_birth`
+  correctly landing in `person_match_queue` as `queued` with NO
+  `collision.customer` row created (confirmed real `source_project`,
+  `status`, `match_reason` columns by direct query, not just the API's
+  own echo). Cleanup by explicit marker-email/last_name match in FK-safe
+  order (`person_match_queue` -> `collision.customer` -> `platform.person`),
+  independently re-verified 0 rows remaining. `uvicorn` killed by its
+  real listening PID (`netstat`), confirmed stopped via a timed-out
+  `curl` (exit 7) + a follow-up `netstat` showing no `LISTENING` entry.
+  **Found, not caused, and left alone:** one pre-existing orphan
+  `collision.customer`/`platform.person` row on staging
+  (`smoke.renter.elektrica@example.com`) not matching any marker this
+  session used and not attributable to this session's own scripts --
+  flagged for whoever owns that fixture to clean up, not deleted
+  blind since its provenance/purpose isn't known to this session.
 - **PATCH /sites/{id}/active (2026-09-08, this cron cycle):** Added
   `app.repository.set_site_active()` + `PATCH /sites/{id}/active` (soft
   activate/deactivate, `{active, actor}` body, 404 on unknown id) —

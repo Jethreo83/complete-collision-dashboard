@@ -256,6 +256,107 @@ def create_person_and_customer(
     return create_customer_for_existing_person(cur, person_id, actor, source=source)
 
 
+class CustomerIntakeResult:
+    """Return shape for match_or_create_and_link_customer() -- deliberately
+    NOT the same as Customer, because 'queued' is a real third outcome
+    with no linked collision.customer row yet (identical reasoning to
+    Elektrica's RenterIntakeResult -- same underlying primitive, same
+    third-outcome shape, copied deliberately not reinvented)."""
+
+    def __init__(self, match_status: str, person_id: int,
+                 queue_id: Optional[int] = None, customer: Optional[Customer] = None):
+        self.match_status = match_status  # 'attached' | 'queued' | 'created'
+        self.person_id = person_id
+        self.queue_id = queue_id
+        self.customer = customer
+
+
+def match_or_create_and_link_customer(
+    cur, first_name: str, last_name: str, actor: str,
+    date_of_birth: Optional[date] = None,
+    email_normalized: Optional[str] = None,
+    phone_normalized: Optional[str] = None,
+    source: str = "walk_in",
+) -> CustomerIntakeResult:
+    """The real customer-intake path via the shared identity primitive --
+    closes the gap this module's own create_person_and_customer()
+    docstring has flagged since migration 001 ("NEXT TIME THIS FUNCTION
+    IS TOUCHED, swap the raw INSERT for platform.match_or_create_person()").
+    Modeled directly on Elektrica's match_or_create_and_link_renter()
+    (app/repository.py in elektrica-dashboard-ref, live/verified there) --
+    same shared platform.match_or_create_person() primitive, same
+    SET ROLE platform_identity_service / RESET ROLE sequencing within one
+    transaction, same three-way match_status branch. Confirmed by direct
+    query against real staging Postgres this cycle: platform_identity_service
+    has EXECUTE on platform.match_or_create_person() (7-arg SECURITY
+    DEFINER: first_name, last_name, date_of_birth, email_normalized,
+    phone_normalized, source_project, submitted_by); collision_app has
+    zero pg_auth_members rows granting it that role or a direct grant --
+    same access gap Elektrica already documented and worked around, now
+    confirmed true for Collision too rather than assumed by analogy.
+
+    REQUIRES A PRIVILEGED CURSOR (app.api.get_privileged_cursor(), NOT
+    get_cursor()) for the same reason app.db.py's module docstring has
+    flagged since migration 001: collision_app cannot reach
+    platform_identity_service, so this function issues `SET ROLE
+    platform_identity_service` itself and would fail under a connection
+    already pinned to collision_app.
+
+    Sequencing within this one transaction:
+      1. SET ROLE platform_identity_service, call
+         platform.match_or_create_person(source_project='collision').
+      2. RESET ROLE back to the connection's original login role before
+         touching collision.customer -- platform_identity_service has no
+         grants on the collision schema (least-privilege split, same as
+         every other role in this repo family).
+      3. Branch on match_status:
+         - 'attached' or 'created': resolved with confidence -- link (or
+           find-existing) the collision.customer row via
+           create_customer_for_existing_person().
+         - 'queued': per the same rule Elektrica's docstring documents,
+           does NOT create a collision.customer row -- returns
+           customer=None and the real queue_id for a human to resolve via
+           the shared platform.person_match_queue admin action (built and
+           live-verified on the Elektrica side, GET/POST
+           /person-match-queue/... -- not re-built here, same shared
+           primitive, no Collision-specific admin route needed unless
+           Jed wants one).
+
+    Callers should normalize email/phone via app.normalize before calling
+    this (see that module's docstring) -- this function does not
+    normalize its own inputs, matching Elektrica's convention of
+    normalizing at the API boundary, not inside the identity call.
+    """
+    cur.execute("SET ROLE platform_identity_service")
+    try:
+        cur.execute(
+            """
+            SELECT * FROM platform.match_or_create_person(%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (first_name, last_name, date_of_birth, email_normalized,
+             phone_normalized, "collision", actor),
+        )
+        match_row = cur.fetchone()
+    finally:
+        cur.execute("RESET ROLE")
+
+    person_id = match_row["person_id"]
+    match_status = match_row["match_status"]
+    queue_id = match_row["queue_id"]
+
+    if match_status == "queued":
+        return CustomerIntakeResult(
+            match_status=match_status, person_id=person_id,
+            queue_id=queue_id, customer=None,
+        )
+
+    customer = create_customer_for_existing_person(cur, person_id, actor, source=source)
+    return CustomerIntakeResult(
+        match_status=match_status, person_id=person_id,
+        queue_id=None, customer=customer,
+    )
+
+
 def _customer_from_row(row) -> Customer:
     return Customer(
         id=row["id"], person_id=row["person_id"], source=row["source"],

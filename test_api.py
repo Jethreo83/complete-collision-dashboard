@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.api import app, get_cursor
+from app.api import app, get_cursor, get_privileged_cursor
+from app import repository as repo_mod
 from app.models import (
     CostCategory, CostEntry, Customer, DerivedTagsSource, Estimate,
     EstimateSource, JobCategory, JobEvent, JobStatus, PaymentSource,
@@ -30,6 +31,7 @@ def _override_cursor():
 
 
 app.dependency_overrides[get_cursor] = _override_cursor
+app.dependency_overrides[get_privileged_cursor] = _override_cursor
 client = TestClient(app)
 
 
@@ -627,6 +629,56 @@ def test_get_vehicle_by_vin_found():
         r = client.get("/vehicles/by-vin/1HGCM82633A004352")
     check("test_get_vehicle_by_vin_found_status", r.status_code == 200, r.text)
     check("test_get_vehicle_by_vin_found_body", r.json()["make"] == "Honda", r.text)
+
+
+def test_intake_customer_attached():
+    result = repo_mod.CustomerIntakeResult(
+        match_status="attached", person_id=1, queue_id=None, customer=_sample_customer(),
+    )
+    with patch("app.api.repo.match_or_create_and_link_customer", return_value=result) as m:
+        r = client.post("/customers/intake", json={
+            "first_name": "Jane", "last_name": "Doe", "actor": "front_desk",
+            "email": "Jane@Example.com", "phone": "(512) 555-0100",
+        })
+    check("test_intake_customer_attached_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_customer_attached_match_status", body["match_status"] == "attached", body)
+    check("test_intake_customer_attached_customer", body["customer"]["id"] == 1, body)
+    check("test_intake_customer_attached_queue_id_none", body["queue_id"] is None, body)
+    # email/phone normalized BEFORE reaching the repository call
+    _, kwargs = m.call_args
+    check("test_intake_customer_email_normalized", kwargs["email_normalized"] == "jane@example.com", kwargs)
+    check("test_intake_customer_phone_normalized", kwargs["phone_normalized"] == "5125550100", kwargs)
+
+
+def test_intake_customer_created():
+    result = repo_mod.CustomerIntakeResult(
+        match_status="created", person_id=42, queue_id=None, customer=_sample_customer(id=2, person_id=42),
+    )
+    with patch("app.api.repo.match_or_create_and_link_customer", return_value=result):
+        r = client.post("/customers/intake", json={
+            "first_name": "New", "last_name": "Walkin", "actor": "front_desk",
+        })
+    check("test_intake_customer_created_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_customer_created_match_status", body["match_status"] == "created", body)
+    check("test_intake_customer_created_person_id", body["person_id"] == 42, body)
+
+
+def test_intake_customer_queued():
+    result = repo_mod.CustomerIntakeResult(
+        match_status="queued", person_id=7, queue_id=99, customer=None,
+    )
+    with patch("app.api.repo.match_or_create_and_link_customer", return_value=result):
+        r = client.post("/customers/intake", json={
+            "first_name": "Maybe", "last_name": "Sameperson", "actor": "front_desk",
+            "date_of_birth": "1990-01-01",
+        })
+    check("test_intake_customer_queued_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_customer_queued_match_status", body["match_status"] == "queued", body)
+    check("test_intake_customer_queued_queue_id", body["queue_id"] == 99, body)
+    check("test_intake_customer_queued_no_customer", body["customer"] is None, body)
 
 
 def test_get_vehicle_by_vin_not_found():

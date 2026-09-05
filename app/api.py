@@ -39,6 +39,7 @@ from app import csv_import
 from app import db
 from app import repository as repo
 from app import settlement as settlement_mod
+from app.normalize import normalize_email, normalize_phone
 from app.models import (
     ContentItem, CostCategory, DerivedTagsSource, JobCategory, JobStatus,
     PaymentSource, RepairOrder, StaffRole,
@@ -58,6 +59,34 @@ def get_cursor():
     """FastAPI dependency yielding a transactional cursor, exactly like
     app/db.cursor()'s context manager. Overridden in tests so no test run
     ever needs a real database connection."""
+    env_var = get_db_env_var()
+    with db.cursor(env_var) as cur:
+        yield cur
+
+
+def get_privileged_cursor():
+    """FastAPI dependency for the one route that needs a connection whose
+    LOGIN role itself is allowed to call platform.match_or_create_person()
+    -- currently only POST /customers/intake (see
+    app.repository.match_or_create_and_link_customer()'s docstring).
+    Modeled directly on Elektrica's get_privileged_cursor() (same repo
+    family, same underlying grant gap, confirmed independently against
+    real staging Postgres for Collision this cycle: platform_identity_service
+    has EXECUTE on platform.match_or_create_person(), collision_app has
+    zero pg_auth_members rows granting it that role or a direct grant).
+
+    Same env var as get_cursor() (COLLISION_DB_ENV_VAR) but never sets a
+    role -- connects as whatever LOGIN role the connection string
+    authenticates as (neondb_owner-class in every environment this repo
+    has run in so far), the same "admin-script escape hatch" pattern
+    app/db.py's own module docstring documents for person-row creation.
+    This module has no notion of "SET ROLE collision_app on every other
+    route" today (app/db.cursor() takes no set_role param, unlike
+    Elektrica's), so this is currently identical to get_cursor() in
+    practice -- kept as its own named dependency anyway so the intent
+    (this route needs elevated access) is documented at the call site,
+    not just in a comment, and so it does not silently break if/when
+    get_cursor() ever does start pinning a lower-privileged role."""
     env_var = get_db_env_var()
     with db.cursor(env_var) as cur:
         yield cur
@@ -213,6 +242,36 @@ class CustomerOut(BaseModel):
     person_id: int
     source: str
     elektrica_renter_ref: Optional[int] = None
+
+
+class CustomerIntakeRequest(BaseModel):
+    """Body for POST /customers/intake -- the real identity-resolution
+    intake path via app.repository.match_or_create_and_link_customer(),
+    closing the gap create_person_and_customer()'s docstring has flagged
+    since migration 001. Only first_name/last_name/actor are required --
+    date_of_birth/email/phone are all optional inputs to the SAME
+    underlying platform.match_or_create_person() call (a walk-in intake
+    may legitimately supply only some of them), but supplying NEITHER
+    email NOR phone NOR (last_name+date_of_birth) means the match
+    function has nothing to match on and will always create a new
+    person -- that is the function's own documented behavior, not a bug
+    introduced by this route. email/phone are normalized here
+    (app.normalize) before the repository call, same convention as
+    Elektrica's POST /renters/intake."""
+    first_name: str
+    last_name: str
+    actor: str
+    date_of_birth: Optional[date] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    source: str = "walk_in"
+
+
+class CustomerIntakeOut(BaseModel):
+    match_status: str  # 'attached' | 'queued' | 'created'
+    person_id: int
+    queue_id: Optional[int] = None
+    customer: Optional[CustomerOut] = None
 
 
 class VehicleOut(BaseModel):
@@ -868,6 +927,53 @@ def get_person(person_id: int, cur=Depends(get_cursor)):
     if person is None:
         raise HTTPException(status_code=404, detail=f"No platform.person with id={person_id!r}")
     return PersonOut(**person)
+
+
+@app.post("/customers/intake", response_model=CustomerIntakeOut)
+def intake_customer(body: CustomerIntakeRequest, cur=Depends(get_privileged_cursor)):
+    """The real customer-intake path: closes the gap
+    repo.create_person_and_customer()'s docstring has flagged since
+    migration 001 ("swap the raw INSERT for platform.match_or_create_person()
+    ... not urgent"). Uses get_privileged_cursor(), NOT get_cursor() --
+    see that dependency's own docstring: platform.match_or_create_person()
+    is callable only by neondb_owner/platform_identity_service, and
+    collision_app has no path to either, confirmed by direct query
+    against real staging Postgres this cycle (same access gap Elektrica
+    already documented and worked around for the identical primitive).
+
+    Normalizes email/phone via app.normalize (lowercase+strip email,
+    digits-only phone) before calling
+    repo.match_or_create_and_link_customer() -- same reasoning as
+    Elektrica's POST /renters/intake: match_or_create_person()'s
+    exact-match step does a literal equality comparison against
+    already-normalized platform.person rows, so un-normalized input here
+    would silently under-match and create a duplicate person.
+
+    Does NOT replace create_person_and_customer() (still used by
+    csv_import.py's admin-script path and scripts/_seed_test_people.py)
+    -- this is the new preferred path for a real dashboard "new/returning
+    customer" intake screen once one exists; swapping the CSV importer
+    and provision_new_staff_user() over to the same primitive is a
+    separate follow-up, not done in this pass (same "not urgent, next
+    time you touch those functions" note the docstring gap has carried
+    since 2026-09-06)."""
+    email_normalized = normalize_email(body.email)
+    phone_normalized = normalize_phone(body.phone)
+    result = repo.match_or_create_and_link_customer(
+        cur, body.first_name, body.last_name, body.actor,
+        date_of_birth=body.date_of_birth,
+        email_normalized=email_normalized,
+        phone_normalized=phone_normalized,
+        source=body.source,
+    )
+    return CustomerIntakeOut(
+        match_status=result.match_status,
+        person_id=result.person_id,
+        queue_id=result.queue_id,
+        customer=_customer_to_out(result.customer) if result.customer else None,
+    )
+
+
 
 
 @app.get("/customers/by-person/{person_id}", response_model=CustomerOut)
