@@ -369,6 +369,28 @@ def list_repair_orders(
     return [_repair_order_from_row(r) for r in cur.fetchall()]
 
 
+def get_jobs_closed_in_month(cur, site_id: int, month: str) -> list[RepairOrder]:
+    """Jobs at site_id with closed_at falling in `month` (YYYY-MM).
+    Feeds app/settlement.py's PDR Crew monthly settlement build (ADR-001
+    §7) — a job still open (closed_at IS NULL) has no final numbers to
+    settle, so it is never included regardless of when it was opened.
+    Caller (app/settlement.py) is responsible for validating `month`'s
+    format; this function trusts a well-formed 'YYYY-MM' string, same
+    division of responsibility as list_repair_orders()'s caller-validated
+    enum filters."""
+    cur.execute(
+        """
+        SELECT * FROM collision.job
+        WHERE site_id = %s
+          AND closed_at IS NOT NULL
+          AND to_char(closed_at, 'YYYY-MM') = %s
+        ORDER BY closed_at, id
+        """,
+        (site_id, month),
+    )
+    return [_repair_order_from_row(r) for r in cur.fetchall()]
+
+
 def transition_job_status(
     cur, ro_number: str, target: JobStatus, actor: str, note: Optional[str] = None,
 ) -> RepairOrder:

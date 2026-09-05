@@ -20,6 +20,7 @@ from app.models import (
     EstimateSource, JobCategory, JobEvent, JobStatus, PaymentSource,
     RepairOrder, StaffRole, StaffUser, Vehicle, ContentItem,
 )
+from pdr_settlement import CategorySettlement, MonthlySettlement, ROCategory
 
 FAILED = []
 
@@ -982,6 +983,66 @@ def test_import_csv_unknown_kind_returns_400():
     check("test_import_csv_unknown_kind_returns_400", r.status_code == 400, r.text)
 
 
+# ---------------------------------------------------------------------------
+# PDR Crew monthly settlement (continuous-build cycle: GET /settlements/pdr-crew,
+# wiring app/settlement.py -- itself wiring tested-since-2026-09-04
+# pdr_settlement.py to real collision.job data)
+# ---------------------------------------------------------------------------
+
+def _sample_settlement():
+    collision_cat = CategorySettlement(
+        category=ROCategory.COLLISION, ro_numbers=["RO-1"],
+        gross_revenue=Decimal("1000.00"), total_costs_netted=Decimal("400.00"),
+        net_profit=Decimal("600.00"), cc_share_amount=Decimal("420.00"),
+        pdr_share_amount=Decimal("180.00"),
+    )
+    pdr_cat = CategorySettlement(category=ROCategory.PDR)
+    hail_cat = CategorySettlement(category=ROCategory.HAIL)
+    return MonthlySettlement(
+        month="2026-08", site="South",
+        categories={ROCategory.COLLISION: collision_cat, ROCategory.PDR: pdr_cat, ROCategory.HAIL: hail_cat},
+    )
+
+
+def test_get_pdr_crew_settlement_success():
+    settlement = _sample_settlement()
+    with patch(
+        "app.api.settlement_mod.build_monthly_settlement_statement",
+        return_value=(settlement, "STATEMENT TEXT"),
+    ) as m:
+        r = client.get("/settlements/pdr-crew?site_id=1&month=2026-08")
+    check("test_get_pdr_crew_settlement_success_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_get_pdr_crew_settlement_success_month", body["month"] == "2026-08", body)
+    check("test_get_pdr_crew_settlement_success_site", body["site"] == "South", body)
+    check(
+        "test_get_pdr_crew_settlement_success_status_field",
+        body["status"] == "draft_held_for_review", body,
+    )
+    check("test_get_pdr_crew_settlement_success_total", Decimal(body["total_owed_to_pdr"]) == Decimal("180.00"), body)
+    check("test_get_pdr_crew_settlement_success_statement_text", body["statement_text"] == "STATEMENT TEXT", body)
+    check("test_get_pdr_crew_settlement_success_categories_count", len(body["categories"]) == 3, body)
+    m.assert_called_once_with(m.call_args.args[0], 1, "2026-08")
+
+
+def test_get_pdr_crew_settlement_unknown_site_returns_404():
+    with patch(
+        "app.api.settlement_mod.build_monthly_settlement_statement",
+        side_effect=ValueError("no collision.site with id=999"),
+    ):
+        r = client.get("/settlements/pdr-crew?site_id=999&month=2026-08")
+    check("test_get_pdr_crew_settlement_unknown_site_returns_404", r.status_code == 404, r.text)
+
+
+def test_get_pdr_crew_settlement_bad_month_returns_400():
+    with patch(
+        "app.api.settlement_mod.build_monthly_settlement_statement",
+        side_effect=ValueError("month='not-a-month' must be in YYYY-MM format"),
+    ):
+        r = client.get("/settlements/pdr-crew?site_id=1&month=not-a-month")
+    check("test_get_pdr_crew_settlement_bad_month_returns_400", r.status_code == 400, r.text)
+
+
 if __name__ == "__main__":
     tests = [
         test_health, test_get_job_found, test_get_job_not_found,
@@ -1031,6 +1092,9 @@ if __name__ == "__main__":
         test_import_csv_commit_true_passed_through_as_not_dry_run,
         test_import_csv_with_errors_reports_ok_false,
         test_import_csv_unknown_kind_returns_400,
+        test_get_pdr_crew_settlement_success,
+        test_get_pdr_crew_settlement_unknown_site_returns_404,
+        test_get_pdr_crew_settlement_bad_month_returns_400,
     ]
     for t in tests:
         t()

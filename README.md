@@ -557,6 +557,62 @@ and requires clarification before any live integration is built.
   real listening PID afterward, confirmed stopped via a failed `curl` +
   a follow-up `netstat` showing no `LISTENING` entry.
 
+- **New this cron cycle (continuous-build):** added
+  `GET /settlements/pdr-crew?site_id=&month=` — wires
+  `pdr_settlement.py`'s PDR Crew monthly settlement calculator (pure
+  computation, tested since 2026-09-04, `test_pdr_settlement.py` 7/7) to
+  real `collision.job` data for the first time via new
+  `app/settlement.py`. Closes the gap ADR-001 §7 flags explicitly as a
+  strong v1 candidate — "PDR Crew monthly settlement automation... not
+  blocked by the CCC ONE license question" — since it only reads
+  Complete Collision's own already-entered job cost/revenue fields, no
+  CCC ONE contact of any kind, and is not blocked by any of the pending
+  Jed-input items (migration 006 cost-category review, migration 011
+  payment_source, receptionist permissions). New
+  `app.repository.get_jobs_closed_in_month(site_id, month)` (jobs whose
+  `closed_at` falls in the given `YYYY-MM`, at the given site — see
+  `app/settlement.py`'s module docstring for the explicit "settle by
+  closed_at, not opened_at/collected_at" ASSUMPTION FLAGGED FOR JED, same
+  discipline as migrations 006/011's enum-value flags). **Still
+  draft-and-hold, same as `pdr_settlement.py`'s own module docstring** —
+  the route returns a computed draft (`status:
+  "draft_held_for_review"`) for Jed's review; nothing sends, emails, or
+  delivers anything to PDR Crew. **Depends on `collision.job.site_id`
+  (migrations/006, STAGING ONLY)** — this route only works against
+  staging until Jed reviews and promotes 006, same constraint `GET
+  /sites` and `GET /jobs?site_id=` already carry. 10 new tests in
+  `test_api.py` (mocked happy path incl. category/total/statement_text
+  round-trip, unknown-site 404, bad-month 400) plus a new
+  `test_settlement.py` (10 tests, no DB dependency, mocking
+  `app.repository` — happy path incl. exact 70/30 and 5/95 split math
+  against hand-computed expected values, unknown-site `ValueError`,
+  malformed-month `ValueError` both for wrong-format and out-of-range
+  months, zero-jobs case, PDR category correctly nets direct costs only
+  ignoring a nonzero `labor_cost` on a PDR-category job). Full suite now
+  156/156 (up from 146/146), 76/76 standalone `test_api.py` runner.
+  **Verified by real HTTP execution against staging**
+  (`scripts/_smoke_http_settlement.py`, 19/19 checks passed): 2 real
+  fixture jobs (one collision-category, one PDR-category) closed in a
+  fixed test month via direct SQL + `add_cost_entry()` (respecting
+  migration 010's trigger-derived `labor_cost`/`direct_ro_costs` — no
+  direct column write), plus a third fixture job closed in a *different*
+  month at the same site to prove the month filter actually filters
+  (confirmed excluded from both the category ro_numbers list and the
+  statement text). Confirmed exact net-profit and split-share math for
+  both categories against hand-calculated expected values (collision:
+  $600.00 net → $420.00 CC / $180.00 PDR; PDR: $450.00 net → $22.50 CC /
+  $427.50 PDR), confirmed `total_owed_to_pdr` sums correctly across
+  categories, confirmed a month with zero closed jobs returns 200 with
+  all-zero totals (not a 404 — the site is real, there's just nothing to
+  settle), confirmed unknown site_id → real 404 and malformed month →
+  real 400 through HTTP (not just repository-layer exceptions). Cleanup
+  by explicit id match (jobs → cost_entries/job_events → vehicles →
+  customer → person → site, in FK-safe order), independently
+  re-verified 0 rows remaining across all three tables via separate
+  follow-up queries. `uvicorn` killed by its real listening PID
+  (`netstat`), confirmed stopped via a timed-out `curl` (exit 7) + a
+  follow-up `netstat` showing no `LISTENING` entry.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

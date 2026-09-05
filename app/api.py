@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from app import csv_import
 from app import db
 from app import repository as repo
+from app import settlement as settlement_mod
 from app.models import (
     ContentItem, CostCategory, DerivedTagsSource, JobCategory, JobStatus,
     PaymentSource, RepairOrder, StaffRole,
@@ -891,6 +892,72 @@ def get_vehicle_by_vin_route(vin: str, cur=Depends(get_cursor)):
     if vehicle is None:
         raise HTTPException(status_code=404, detail=f"No vehicle with vin={vin!r}")
     return _vehicle_to_out(vehicle)
+
+
+# ---------------------------------------------------------------------------
+# PDR Crew monthly settlement (continuous-build cycle: wires
+# pdr_settlement.py's pure-computation calculator -- tested since
+# 2026-09-04 (test_pdr_settlement.py, 7/7) but never fed real job data --
+# to real collision.job rows via app/settlement.py. ADR-001 §7 flags this
+# as a strong v1 candidate specifically because it is NOT blocked by any
+# of the CCC ONE / payment_source / cost_category open questions: it
+# only reads Complete Collision's own already-entered job cost/revenue
+# fields. *** DRAFT-AND-HOLD, same as pdr_settlement.py's own module
+# docstring: this computes and returns a draft statement for Jed's
+# review. Nothing here sends, emails, or otherwise delivers anything to
+# PDR Crew. *** Depends on collision.job.site_id (migrations/006,
+# STAGING ONLY as of this writing) -- this route only works against
+# staging until Jed promotes 006, same constraint GET /sites and GET
+# /jobs?site_id= already carry.
+# ---------------------------------------------------------------------------
+
+class CategorySettlementOut(BaseModel):
+    category: str
+    ro_numbers: list[str]
+    gross_revenue: Decimal
+    total_costs_netted: Decimal
+    net_profit: Decimal
+    cc_share_amount: Decimal
+    pdr_share_amount: Decimal
+
+
+class MonthlySettlementOut(BaseModel):
+    month: str
+    site: str
+    status: str
+    total_owed_to_pdr: Decimal
+    categories: list[CategorySettlementOut]
+    statement_text: str
+
+
+@app.get("/settlements/pdr-crew", response_model=MonthlySettlementOut)
+def get_pdr_crew_settlement(site_id: int, month: str, cur=Depends(get_cursor)):
+    try:
+        settlement, statement_text = settlement_mod.build_monthly_settlement_statement(cur, site_id, month)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("no collision.site"):
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    return MonthlySettlementOut(
+        month=settlement.month,
+        site=settlement.site,
+        status=settlement.status,
+        total_owed_to_pdr=settlement.total_owed_to_pdr(),
+        categories=[
+            CategorySettlementOut(
+                category=cat.value,
+                ro_numbers=c.ro_numbers,
+                gross_revenue=c.gross_revenue,
+                total_costs_netted=c.total_costs_netted,
+                net_profit=c.net_profit,
+                cc_share_amount=c.cc_share_amount,
+                pdr_share_amount=c.pdr_share_amount,
+            )
+            for cat, c in settlement.categories.items()
+        ],
+        statement_text=statement_text,
+    )
 
 
 # ---------------------------------------------------------------------------
