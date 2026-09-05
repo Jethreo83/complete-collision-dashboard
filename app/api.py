@@ -32,9 +32,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import jwt as pyjwt
 
 from app import csv_import
 from app import db
@@ -79,6 +80,125 @@ def get_cursor():
     env_var = get_db_env_var()
     with db.cursor(env_var) as cur:
         yield cur
+
+
+# ---------------------------------------------------------------------------
+# Auth (hermes, 2026-09-05): shared-secret SSO per shell-dashboard's
+# JWT_CONTRACT.md. Mirrors Elektrica's require_staff()/enforce_staff_auth
+# pattern exactly - this repo had a real, genuine gap (zero authentication
+# anywhere) surfaced by external review access needing to be set up; every
+# route was reachable by anyone with the URL. Fail-closed by design:
+# JWT_SECRET unset -> 503, not open access.
+# ---------------------------------------------------------------------------
+
+class StaffSession(BaseModel):
+    person_id: int
+    google_email: str
+    role: str
+    staff_user_id: int
+
+
+def get_jwt_secret() -> str:
+    secret = os.environ.get("JWT_SECRET")
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="JWT_SECRET is not configured server-side -- auth is disabled, refusing to accept unverified requests.",
+        )
+    return secret
+
+
+def require_staff(
+    authorization: "str | None" = Header(default=None),
+    cur=Depends(get_cursor),
+) -> StaffSession:
+    """Verifies the shared-secret SSO JWT (shell-dashboard's
+    JWT_CONTRACT.md #4) and re-checks entitlement against
+    collision.staff_user on EVERY request, matching Elektrica's
+    require_staff() and VLS's requireAuth() literally step for step so
+    all three backends behave identically to shell/reviewers:
+      1. Read Authorization: Bearer *** -- 401 if missing.
+      2. jwt.decode(..., algorithms=['HS256']) -- 401 on any failure.
+      3. iss must be 'shell-dashboard' -- 401 otherwise.
+      4. grants must contain a 'collision' entry -- 403 otherwise.
+      5. Look up collision.staff_user by google_email, require
+         active=true -- 403 if missing/inactive (freshly-read every
+         request, never the JWT's own baked-in role/claim).
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization: Bearer *** header.")
+    token = authorization.split(" ", 1)[1].strip()
+    secret = get_jwt_secret()
+    try:
+        payload = pyjwt.decode(token, secret, algorithms=["HS256"])
+    except pyjwt.PyJWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}")
+    if payload.get("iss") != "shell-dashboard":
+        raise HTTPException(status_code=401, detail="Token issuer mismatch.")
+    grants = payload.get("grants") or []
+    grant = next((g for g in grants if g.get("business") == "collision"), None)
+    if grant is None:
+        raise HTTPException(status_code=403, detail="This account has no Complete Collision entitlement.")
+    google_email = payload.get("google_email")
+    if not google_email:
+        raise HTTPException(status_code=401, detail="Token is missing google_email.")
+    staff = repo.get_staff_user_by_google_email(cur, google_email)
+    if staff is None or not staff.active:
+        raise HTTPException(
+            status_code=403,
+            detail=f"No active collision.staff_user for {google_email!r} -- entitlement was revoked or never provisioned.",
+        )
+    return StaffSession(
+        person_id=staff.person_id, google_email=google_email,
+        role=staff.role.value, staff_user_id=staff.id,
+    )
+
+
+@app.middleware("http")
+async def enforce_staff_auth(request, call_next):
+    """Global auth gate -- every human-operated route requires a valid
+    shell-issued SSO JWT, EXCEPT /health and FastAPI's own doc UI.
+    Implemented as middleware (not per-route Depends) so a route added
+    later without any auth wiring still gets checked by default -- the
+    fail-closed direction, matching Elektrica's identical rationale.
+
+    OPTIONS passthrough: CORS preflight must reach CORSMiddleware before
+    any auth check runs, or the browser gets a response with no CORS
+    headers and can't read it at all (real bug hit and fixed on
+    Elektrica's identical middleware this same day -- fixed here from
+    the start rather than waiting to reproduce it).
+    """
+    from starlette.responses import JSONResponse
+
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    public_exact = {"/health"}
+    public_prefixes = ("/docs", "/openapi.json", "/redoc")
+    if path in public_exact or path.startswith(public_prefixes):
+        return await call_next(request)
+
+    authorization = request.headers.get("authorization")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return JSONResponse({"detail": "Missing Authorization: Bearer *** header."}, status_code=401)
+    token = authorization.split(" ", 1)[1].strip()
+    secret = os.environ.get("JWT_SECRET")
+    if not secret:
+        return JSONResponse(
+            {"detail": "JWT_SECRET is not configured server-side -- auth is disabled, refusing to accept unverified requests."},
+            status_code=503,
+        )
+    try:
+        payload = pyjwt.decode(token, secret, algorithms=["HS256"])
+    except pyjwt.PyJWTError as e:
+        return JSONResponse({"detail": f"Invalid or expired token: {e}"}, status_code=401)
+    if payload.get("iss") != "shell-dashboard":
+        return JSONResponse({"detail": "Token issuer mismatch."}, status_code=401)
+    grants = payload.get("grants") or []
+    grant = next((g for g in grants if g.get("business") == "collision"), None)
+    if grant is None:
+        return JSONResponse({"detail": "This account has no Complete Collision entitlement."}, status_code=403)
+    return await call_next(request)
 
 
 def get_privileged_cursor():
@@ -629,6 +749,16 @@ def _report_to_out(r) -> ImportReportOut:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/me")
+def get_me(staff: StaffSession = Depends(require_staff)):
+    """Frontend calls this once after receiving the shell's JWT to learn
+    who is signed in and what role they hold in THIS dashboard's own
+    staff_user table (not the JWT's baked-in role) -- same
+    fail-closed/re-check discipline as require_staff() itself. Mirrors
+    Elektrica's identical /me route."""
+    return staff
 
 
 @app.get("/jobs/{ro_number}", response_model=RepairOrderOut)

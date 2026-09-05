@@ -1,86 +1,69 @@
 // src/auth.tsx — "who is calling" staff-session context.
 //
-// IMPORTANT, read before assuming this mirrors VLS exactly: app/api.py's
-// own module docstring says every route is unauthenticated by design —
-// there is no /auth/google (or any auth) route on this backend yet, no
-// JWT issuance, no session verification. VLS's auth.tsx pattern (Google
-// Sign-In -> backend verifies id_token -> issues JWT) cannot be ported
-// as-is because the backend half of that contract does not exist here.
-//
-// This is a deliberate, flagged simplification, not a guess dressed up
-// as the real thing: staff "log in" by picking their own already
-// provisioned collision.staff_user row (GET /staff), identified by
-// google_email. The picked identity is stored in localStorage and sent
-// as the `actor` field on every write call (every write route in
-// app/api.py requires an explicit actor string). There is NO password,
-// NO token, NO server-side session -- this only prevents accidental
-// misattribution during normal use, it is NOT a security boundary. Real
-// Google OAuth + JWT verification is a backend gap to close before this
-// dashboard is used outside a trusted LAN/local demo -- see the final
-// report's "open questions" for this exact item.
+// hermes, 2026-09-05: rewritten from a staff-picker stopgap (see git
+// history for the old version's extensive docstring on why it existed)
+// now that app/api.py has real shared-secret SSO auth (require_staff /
+// enforce_staff_auth per shell-dashboard's JWT_CONTRACT.md). Mirrors
+// Elektrica's auth.tsx pattern: read ?token=... from the URL (the
+// shell's Launcher appends this), store it, call GET /me to learn who
+// signed in and what role they hold in THIS dashboard's own
+// staff_user table.
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { api, type StaffUser } from './api';
+import { apiFetch, getAuthToken, setAuthToken } from './api';
 
-const STORAGE_KEY = 'cc_dashboard_staff_email';
+export interface StaffSession {
+  person_id: number;
+  google_email: string;
+  role: string;
+  staff_user_id: number;
+}
 
 interface AuthContextValue {
-  staff: StaffUser | null;
-  staffList: StaffUser[] | null;
+  staff: StaffSession | null;
   loading: boolean;
   error: string | null;
-  login: (googleEmail: string) => Promise<void>;
   logout: () => void;
-  refreshStaffList: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [staff, setStaff] = useState<StaffUser | null>(null);
-  const [staffList, setStaffList] = useState<StaffUser[] | null>(null);
+  const [staff, setStaff] = useState<StaffSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshStaffList = () => {
-    api.listStaff().then(setStaffList).catch((e) => setError(e.message));
-  };
-
   useEffect(() => {
-    refreshStaffList();
-  }, []);
+    // Token from the shell's Launcher redirect takes priority; strip it
+    // from the URL immediately so it doesn't linger in browser history.
+    const fromUrl = new URLSearchParams(window.location.search).get('token');
+    if (fromUrl) {
+      setAuthToken(fromUrl);
+      const url = new URL(window.location.href);
+      url.searchParams.delete('token');
+      window.history.replaceState({}, '', url.toString());
+    }
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
+    const token = getAuthToken();
+    if (!token) {
       setLoading(false);
       return;
     }
-    api.getStaffByEmail(saved)
+    apiFetch<StaffSession>('/me')
       .then((s) => setStaff(s))
-      .catch(() => localStorage.removeItem(STORAGE_KEY))
+      .catch((e: any) => {
+        setAuthToken(null);
+        setError(e.body?.detail ?? e.message);
+      })
       .finally(() => setLoading(false));
   }, []);
 
-  const login = async (googleEmail: string) => {
-    setError(null);
-    try {
-      const s = await api.getStaffByEmail(googleEmail);
-      if (!s.active) throw new Error(`${googleEmail} is deactivated — ask an owner/manager to reactivate.`);
-      localStorage.setItem(STORAGE_KEY, s.google_email);
-      setStaff(s);
-    } catch (e: any) {
-      setError(e.body?.detail ?? e.message);
-      throw e;
-    }
-  };
-
   const logout = () => {
-    localStorage.removeItem(STORAGE_KEY);
+    setAuthToken(null);
     setStaff(null);
   };
 
   return (
-    <AuthContext.Provider value={{ staff, staffList, loading, error, login, logout, refreshStaffList }}>
+    <AuthContext.Provider value={{ staff, loading, error, logout }}>
       {children}
     </AuthContext.Provider>
   );
@@ -92,7 +75,17 @@ export function useAuth() {
   return ctx;
 }
 
+/** Actor string for write-attribution fields (existing app/api.py write
+ * routes expect an explicit actor string) — now derived from the real
+ * verified session instead of an unauthenticated localStorage pick. */
 export function getActor(): string {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  return saved ?? 'unknown_staff';
+  const token = getAuthToken();
+  if (!token) return 'unknown_staff';
+  try {
+    const [, payload] = token.split('.');
+    const decoded = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+    return decoded.google_email ?? 'unknown_staff';
+  } catch {
+    return 'unknown_staff';
+  }
 }

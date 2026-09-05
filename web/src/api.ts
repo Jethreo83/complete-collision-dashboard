@@ -38,9 +38,26 @@ export function fmtMoney(v: string | number | null | undefined): string {
   return money(v).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
+const TOKEN_STORAGE_KEY = 'cc_dashboard_token';
+
+// hermes, 2026-09-05: real backend auth now exists (require_staff /
+// enforce_staff_auth per JWT_CONTRACT.md), so every call needs the
+// shell-issued token attached. Module-level getter/setter (not React
+// state) so apiFetch can reach it without threading auth context
+// through every call site.
+export function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_STORAGE_KEY);
+}
+export function setAuthToken(token: string | null): void {
+  if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  else localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers as Record<string, string> | undefined),
   };
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });

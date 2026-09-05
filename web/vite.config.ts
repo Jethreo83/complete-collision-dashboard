@@ -12,6 +12,9 @@ import { defineConfig } from 'vite'
 // bookmarked URL to silently serve the wrong app. strictPort:true makes
 // Vite fail loudly instead of picking a random free port if 5182 is busy.
 export default defineConfig({
-  server: { port: 5182, strictPort: true },
+  // allowedHosts: temporary review-access tunnel (cloudflared quick
+  // tunnel, hermes 2026-09-05) so Grok's team can review this build
+  // remotely. Revert once the review is done.
+  server: { port: 5182, strictPort: true, allowedHosts: ['.trycloudflare.com'] },
   plugins: [react()],
 })
