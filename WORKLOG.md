@@ -3170,3 +3170,85 @@ Next up: same Jed-blocked items as every prior cycle. No other
 "csv_import.py identity-match" follow-up items remain open -- this closes
 the last Phase 1 write path that bypassed platform.match_or_create_person().
 
+Session: 2026-09-05 cron cycle (continuous-build -- New Customer intake
+screen, frontend consumer for POST /customers/intake)
+
+FILES MODIFIED
+--------------
+web/src/api.ts -- added CustomerIntakeRequest/CustomerIntakeResult types +
+api.intakeCustomer(), matching app/api.py's CustomerIntakeRequest/
+CustomerIntakeOut pydantic models 1:1 (this backend route existed since a
+prior cycle but had NO frontend consumer at all -- a real gap:
+NewJobPage.tsx requires a person_id staff must already know, with
+literally nowhere in the app that could produce one for a walk-in).
+web/src/pages/NewCustomerPage.tsx (NEW) -- wraps POST /customers/intake,
+surfaces the real 3-way match_status outcome (attached/created/queued)
+rather than hiding it -- 'queued' explicitly tells staff nothing was
+created and a queue_id exists for human resolution (today: via
+Elektrica's admin surface, no Collision-specific queue UI built), so
+staff don't wrongly assume the customer is ready to use.
+web/src/App.tsx -- wired /customers/new route + nav item. Also fixed a
+REAL PRE-EXISTING BUG found while doing this: activeLabel's ternary
+chain checked location.pathname.startsWith('/jobs/') BEFORE the
+'/jobs/new' exact-match check, so the New Job screen's page header
+always incorrectly showed "Job Detail" instead of "New Job" since that
+screen was added. Reordered exact-path checks before the prefix check.
+web/src/pages/NewJobPage.tsx -- added a cross-link to /customers/new for
+staff who don't already have a person_id.
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+`npm install` + `npm run build` (tsc -b && vite build): clean, no new
+errors, dist output produced.
+`python -m pytest`: 179/179, unchanged (backend routes untouched this
+pass, only a new frontend consumer).
+
+REAL HTTP VERIFICATION AGAINST STAGING: found a uvicorn already
+LISTENING on :8002 (PID 257068) -- checked its /openapi.json before
+trusting it and found only 29 paths, missing /customers/intake and
+several other recently-added routes. Confirmed via `Get-Process
+-Id ... | Select StartTime` (10:00:45 AM) vs git log timestamps that
+this was a STALE leftover dev server from earlier today, not a
+concurrent session actively working -- killed it, started a fresh
+uvicorn (confirmed 31 paths, /customers/intake present), then:
+  - Ran scripts/_smoke_http_customer_intake.py end-to-end against it:
+    18/18 checks passed (created/attached/queued outcomes, cleanup
+    independently reverified 0 rows) -- this test already existed from
+    a prior cycle, re-run here specifically because the stale server
+    would have made it FAIL misleadingly if I hadn't checked first.
+  - Direct curl POST to /customers/intake with a fresh marker email,
+    confirmed the raw JSON response shape
+    (match_status/person_id/queue_id/customer{id,person_id,source,
+    elektrica_renter_ref}) matches the new TS CustomerIntakeResult
+    interface exactly, field-for-field -- not assumed from reading
+    api.py's pydantic model alone.
+  - Cleaned up that marker row (person_id 11, customer_id 7) via a
+    throwaway script, confirmed 0 remaining rows by direct query, then
+    deleted the throwaway script itself (not committed).
+  - Killed the fresh uvicorn afterward, confirmed stopped (connection
+    refused), removed its log file. Working tree left clean except the
+    intended 4 source files.
+
+OPEN ITEM FOR JED: this repo has no documented convention for checking
+whether a dev server already running on a shared port is stale vs. a
+teammate's active session before trusting/reusing it. Worth a one-line
+note in README.md's "Run locally" section (e.g. "check /openapi.json
+path count against the routes list in this doc, or just restart it")
+so a future cycle doesn't silently trust a stale server's test results.
+Not fixed this pass to keep this commit focused on the frontend feature.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No Collision-specific person_match_queue resolution UI (same "not
+  done" note carried since the intake route was first built) -- a
+  'queued' outcome on the new screen still points staff at Elektrica's
+  existing admin surface.
+- Same CCC ONE license question / migration 011 payment_source enum /
+  migration 006 cost-category review / gross_revenue audit-trail design
+  blockers as every prior cycle, unchanged, all still awaiting Jed.
+
+Next up: same Jed-blocked items as every prior cycle. Also candidate for
+next buildable item: /staff/intake has no frontend consumer either --
+StaffAdminPage.tsx's POST /staff form still requires a known person_id,
+same gap NewJobPage had before this cycle.
+
