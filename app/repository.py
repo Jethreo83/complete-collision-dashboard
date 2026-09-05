@@ -141,6 +141,25 @@ def get_person_by_id(cur, person_id: int) -> Optional[dict]:
     return cur.fetchone()
 
 
+def get_person_details_by_id(cur, person_id: int) -> Optional[dict]:
+    """Read-only lookup returning the identity-service-owned fields the
+    dashboard's New Job (RO intake) screen needs to show "is this the
+    right person" before creating a job against a bare person_id --
+    closes a real UI gap flagged this cycle: get_person_by_id() above
+    only ever selected `id` (enough to validate existence for POST
+    /jobs's FK-violation-avoidance check), so there was no way for a
+    human typing a person_id into a form to confirm they'd typed the
+    right one. Still strictly read-only against platform.person --
+    does NOT create/edit person rows, same boundary as every other
+    function in this module that touches platform.person."""
+    cur.execute(
+        "SELECT id, first_name, last_name, email_normalized, phone_normalized "
+        "FROM platform.person WHERE id = %s",
+        (person_id,),
+    )
+    return cur.fetchone()
+
+
 def get_customer_by_person_id(cur, person_id: int) -> Optional[Customer]:
     cur.execute("SELECT * FROM collision.customer WHERE person_id = %s", (person_id,))
     row = cur.fetchone()

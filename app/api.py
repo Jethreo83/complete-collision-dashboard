@@ -845,6 +845,31 @@ def get_job_payments_summary(ro_number: str, cur=Depends(get_cursor)):
 # csv_import.py's existing find-or-create paths, unchanged.
 # ---------------------------------------------------------------------------
 
+class PersonOut(BaseModel):
+    """Thin, read-only mirror of platform.person's own columns -- added
+    this cycle to close a real dashboard-UI gap: repo.get_person_by_id()
+    only ever selected the bare `id` (enough for POST /jobs's FK-exists
+    check), so nothing HTTP-reachable could show a human "is this the
+    person you meant" before creating a job against a person_id they
+    typed in. Read-only -- does not create/edit platform.person, same
+    boundary every other route touching that table already respects
+    (see JobIntakeCreateRequest's own docstring for why creating NEW
+    person rows stays out of scope for this unauthenticated app layer)."""
+    id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email_normalized: Optional[str] = None
+    phone_normalized: Optional[str] = None
+
+
+@app.get("/persons/{person_id}", response_model=PersonOut)
+def get_person(person_id: int, cur=Depends(get_cursor)):
+    person = repo.get_person_details_by_id(cur, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail=f"No platform.person with id={person_id!r}")
+    return PersonOut(**person)
+
+
 @app.get("/customers/by-person/{person_id}", response_model=CustomerOut)
 def get_customer_by_person(person_id: int, cur=Depends(get_cursor)):
     customer = repo.get_customer_by_person_id(cur, person_id)
