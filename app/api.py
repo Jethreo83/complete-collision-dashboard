@@ -33,6 +33,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import csv_import
@@ -48,6 +49,22 @@ from app.models import (
 app = FastAPI(
     title="Complete Collision Dashboard API (Phase 1, internal/local only)",
     version="0.1.0",
+)
+
+# CORS -- frontend (Vite dev server, pinned port 5182) needs this to call
+# the API cross-origin. Real bug found 2026-09-05 (hermes): VLS hit the
+# identical gap (default CORS origin list didn't include the dashboard's
+# own port) and failed every login with a silent "Failed to fetch" in the
+# browser, since fetch() never even gets a response to show a real error
+# for. Covering all 4 known local dashboard ports here up front rather
+# than waiting to hit the same bug.
+_default_cors_origins = "http://localhost:5173,http://localhost:5180,http://localhost:5181,http://localhost:5182"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("COLLISION_CORS_ORIGINS", _default_cors_origins).split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
