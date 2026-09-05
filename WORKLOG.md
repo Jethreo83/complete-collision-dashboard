@@ -3345,3 +3345,74 @@ punted to Elektrica's admin surface on every 'queued' outcome across
 both intake screens), or picking up the migration 006/011 review once
 Jed weighs in.
 
+
+Session: 2026-09-05 cron cycle (continuous-build -- Sites admin
+screen, frontend consumer for PATCH /sites/{id}/active)
+
+FILES MODIFIED
+--------------
+web/src/api.ts -- added Site's getSite()/setSiteActive() to the api
+client, matching app/api.py's SiteOut/SiteActiveRequest 1:1 (the
+backend route existed since 47b548a with NO frontend consumer at
+all -- confirmed by grep across web/src before building, same class
+of gap NewCustomerPage/StaffIntakePage closed for their own routes in
+earlier cycles).
+web/src/App.tsx -- added /sites route + nav item, gated to
+owner/manager (same visibility rule as the existing Staff nav item).
+
+FILES CREATED
+-------------
+web/src/pages/SitesAdminPage.tsx -- read + soft activate/deactivate
+only, deliberately NO create-site form (sites, migrations/006 staging
+only, are only ever created via repo.get_or_create_site()'s
+find-or-create path from POST /jobs / CSV importers, per ADR-001 Sec4's
+no-guessed-data stance -- a human never types a brand-new site name
+into an admin form speculatively).
+scripts/_smoke_http_sites_active_page.py -- real HTTP smoke test, 11/11
+checks passed against live staging (fixture site round-trips through
+GET /sites, PATCH deactivate/reactivate, active_only filter both
+directions, unknown id -> 404).
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+`npm run build` (tsc -b && vite build): clean, no new errors.
+`python -m pytest`: 179/179 unchanged (no backend changes -- route
+already existed, only added the frontend consumer).
+
+REAL HTTP VERIFICATION AGAINST STAGING: git fetch/status clean before
+and after commit (no concurrent drift). Found a stale uvicorn already
+LISTENING on :8002 (PID 526268, started 3:54 PM per
+`Get-Process | Select StartTime`) -- checked /openapi.json first
+(29 paths, matches the CORS-middleware commit's timestamp, hours
+before this cycle) and did not trust it; killed it, started a fresh
+uvicorn on :8010 against real staging (confirmed via
+`neon branches list --project-id aged-art-92489373` +
+`neon connection-string staging --role-name neondb_owner --extended`,
+host ep-bold-leaf matches known-good staging, not ep-damp-bird
+production -- 31 paths confirmed, including /sites/{id}/active).
+Ran the new smoke script against it: created a fixture site directly
+via SQL, exercised the full PATCH deactivate -> filter check ->
+reactivate cycle plus unknown-id 404, all 11/11 passed. Cleaned up by
+the fixture's exact id (checked 0 job references first), independently
+re-verified 0 remaining CronVerify* rows via a separate direct query
+(not just trusting the smoke script's own cleanup step). Killed the
+verification server by its real LISTENING pid via netstat (same
+gotcha documented in web/README.md -- the launcher's reported pid was
+NOT the actual listener), confirmed stopped via connection-refused
+curl + no LISTENING entry. Removed its log file. Pushed 84f6e8b to
+origin/main.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+Same CCC ONE license question / migration 011 payment_source
+confirmation / migration 006 cost-category review / gross_revenue
+audit-trail design blockers as every prior cycle, unchanged, all still
+awaiting Jed.
+
+Next up: no remaining known backend route without a frontend consumer
+found this cycle (grepped every @app.get/post/patch path against
+web/src/api.ts's api object). Next buildable candidates: Collision-
+specific person_match_queue resolution screen (still punted to
+Elektrica's admin surface on every intake screen's 'queued' outcome),
+or the migration 006/011 review once Jed weighs in.
+
