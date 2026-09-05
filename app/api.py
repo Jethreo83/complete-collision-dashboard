@@ -393,6 +393,43 @@ class StaffProvisionRequest(BaseModel):
     provisioned_by_staff_user_id: Optional[int] = None
 
 
+class StaffIntakeRequest(BaseModel):
+    """Body for POST /staff/intake -- the real staff-onboarding path via
+    app.repository.match_or_create_and_provision_staff(), closing the gap
+    provision_new_staff_user()'s docstring has flagged since migration
+    001/004 (same "not urgent, next time you touch it" note
+    POST /customers/intake closed for the customer side this cycle).
+
+    google_email is always the new hire's COMPANY address
+    (@completecollisions.com, migrations/009's CHECK constraint) and is
+    written to collision.staff_user regardless of match outcome.
+    date_of_birth/personal_email/personal_phone are OPTIONAL inputs to
+    platform.match_or_create_person() used only to detect that this new
+    hire already exists as a platform.person (e.g. a Collision customer,
+    or -- the real cross-business case this bot's memory tracks -- an
+    Elektrica renter) under their personal contact info; they are never
+    written to collision.staff_user. Supplying none of them means the
+    match function has nothing to match on and will always create a new
+    person -- documented behavior, not a bug (same caveat
+    CustomerIntakeRequest's docstring carries)."""
+    first_name: str
+    last_name: str
+    role: str
+    google_email: str
+    actor: str
+    date_of_birth: Optional[date] = None
+    personal_email: Optional[str] = None
+    personal_phone: Optional[str] = None
+    provisioned_by_staff_user_id: Optional[int] = None
+
+
+class StaffIntakeOut(BaseModel):
+    match_status: str  # 'attached' | 'queued' | 'created'
+    person_id: int
+    queue_id: Optional[int] = None
+    staff: Optional[StaffUserOut] = None
+
+
 class StaffActiveRequest(BaseModel):
     active: bool
     actor: str
@@ -1221,6 +1258,52 @@ def provision_staff(body: StaffProvisionRequest, cur=Depends(get_cursor)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _staff_to_out(staff)
+
+
+@app.post("/staff/intake", response_model=StaffIntakeOut)
+def intake_staff(body: StaffIntakeRequest, cur=Depends(get_privileged_cursor)):
+    """The real staff-onboarding path: closes the gap
+    repo.provision_new_staff_user()'s docstring flagged since migration
+    001/004 ("swap the raw INSERT for platform.match_or_create_person()
+    ... not urgent"), same way POST /customers/intake closed it for
+    customers this cycle. Uses get_privileged_cursor(), NOT get_cursor()
+    -- same reason as /customers/intake: platform.match_or_create_person()
+    is callable only by neondb_owner/platform_identity_service, and
+    collision_app has no path to either.
+
+    Does NOT replace provision_new_staff_user() (still used by
+    scripts/_smoke_010_app_layer.py-style synthetic test fixtures) or
+    POST /staff above (still the right route once a person_id is already
+    known/confirmed by a human, e.g. resolving a 'queued' match from this
+    route). This is the new preferred path for a real "onboard a new
+    staff member" admin screen -- typed personal contact info lets it
+    catch the cross-business case (new hire already exists as a
+    Collision customer or Elektrica renter) instead of always creating a
+    fresh platform.person."""
+    email_normalized = normalize_email(body.personal_email)
+    phone_normalized = normalize_phone(body.personal_phone)
+    try:
+        role = StaffRole(body.role)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role={body.role!r} must be one of {[r.value for r in StaffRole]}",
+        )
+    try:
+        result = repo.match_or_create_and_provision_staff(
+            cur, body.first_name, body.last_name, role, body.google_email, body.actor,
+            date_of_birth=body.date_of_birth,
+            email_normalized=email_normalized,
+            phone_normalized=phone_normalized,
+            provisioned_by_staff_user_id=body.provisioned_by_staff_user_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return StaffIntakeOut(
+        match_status=result.match_status, person_id=result.person_id,
+        queue_id=result.queue_id,
+        staff=_staff_to_out(result.staff) if result.staff else None,
+    )
 
 
 @app.get("/staff", response_model=list[StaffUserOut])

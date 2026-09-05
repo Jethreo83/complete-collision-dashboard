@@ -10,11 +10,14 @@ FAILED = []
 
 
 def check(name: str, condition: bool, detail: str = ""):
+    """Prints PASS/FAIL AND raises on failure -- see test_api.py's check()
+    docstring (fixed the same cycle) for why this matters under pytest."""
     if condition:
         print(f"PASS: {name}")
     else:
         print(f"FAIL: {name} {detail}")
         FAILED.append(name)
+        raise AssertionError(f"{name}: {detail}")
 
 
 def test_normalize_email_lowercases():

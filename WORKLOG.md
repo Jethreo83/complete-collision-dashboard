@@ -2958,4 +2958,105 @@ consumer (this cycle's POST /customers/intake) proves the pattern works
 end-to-end for Collision.
 
 
+2026-09-05 (continuous-build cron cycle: staff identity-match intake +
+a real test-harness bug fix)
+-------------------------------------------------------------------------
+
+FILES MODIFIED
+--------------
+- app/repository.py -- match_or_create_and_provision_staff() +
+  StaffIntakeResult: the staff-onboarding equivalent of last cycle's
+  match_or_create_and_link_customer()/CustomerIntakeResult. Same
+  SET ROLE platform_identity_service / RESET ROLE / three-way
+  match_status branch. Closes the gap provision_new_staff_user()'s own
+  docstring has flagged since migration 001/004 ("swap the raw INSERT
+  for platform.match_or_create_person() ... not urgent"). Distinguishes
+  google_email (company address, always written to staff_user
+  regardless of match outcome) from email_normalized/phone_normalized
+  (personal contact info used ONLY for identity matching -- catches the
+  real cross-business case where a new hire already exists as a
+  Collision customer or Elektrica renter). provision_new_staff_user()
+  kept, not deleted -- still used by scripts/_smoke_010_app_layer.py-
+  style synthetic fixtures; docstring updated to point new callers at
+  the new function instead.
+- app/api.py -- POST /staff/intake (StaffIntakeRequest/StaffIntakeOut),
+  using get_privileged_cursor() same as POST /customers/intake, for the
+  same reason (platform.match_or_create_person() needs a role
+  collision_app doesn't have). Confirmed no FastAPI route-ordering
+  collision with the existing /staff/{google_email} and
+  /staff/{google_email}/active routes (different segment counts).
+- test_api.py -- 5 new tests for POST /staff/intake (attached/created/
+  queued/bad-role/duplicate, mirroring test_intake_customer_* exactly).
+
+REAL BUG FOUND AND FIXED (test harness, not app code)
+------------------------------------------------------
+While adding the new tests, found that this repo's hand-rolled
+check(name, condition, detail) helper (test_api.py/test_csv_import.py/
+test_normalize.py) printed "FAIL: ..." and appended to a FAILED list on
+a failed check, but never RAISED -- so a failing check() inside a
+pytest-discovered test_ function let that function return normally,
+and pytest reported it PASSED regardless of how many checks inside it
+actually failed. The only thing that ever caught a real check()
+failure was manually running each file's own `if __name__ ==
+"__main__"` block and checking its printed FAILED list / exit code --
+which is NOT what `python -m pytest` (the command every prior cycle's
+"N/N passed" WORKLOG line was based on, per this repo's own git log)
+actually runs.
+Made worse in test_api.py specifically: that file's __main__ block used
+a HAND-MAINTAINED hardcoded list of 83 test functions, while pytest
+--collect-only shows 97 real test_ functions actually defined in the
+file -- 14 tests (including, before this fix, several of this cycle's
+own new test_intake_staff_* ones) were unreachable by the only
+mechanism that actually caught a check() failure. test_csv_import.py
+already used globals()-introspection (immune to this specific drift);
+test_api.py's __main__ block now does too.
+Fix: check() now raises AssertionError on a failed condition (all
+three files), and test_api.py's __main__ block was switched from the
+stale hardcoded list to the same globals() introspection
+test_csv_import.py already used.
+Verified genuinely fixed, not just edited: (1) a real python -c probe
+confirmed check() now raises; (2) `python -m pytest` full suite: 178/178
+(up from 173/173, the 5 new tests); (3) each file's OWN __main__ runner,
+independently: test_api.py 97/97 (up from the stale 83/83), 
+test_csv_import.py 37/37, test_normalize.py 12/12 -- all still
+genuinely pass after the fix, so no prior cycle's claimed pass count
+was actually hiding a real regression; the bug was in the safety net's
+wiring, not a false-negative it was masking.
+IMPACT / WHY THIS MATTERS: every prior cycle's "N/N passed" line in
+this WORKLOG relied on check() actually failing loudly when something
+was wrong. It happened to still work because whoever ran it also
+manually ran the __main__ block and read its own separate pass/fail
+line -- but `python -m pytest` alone, run by itself, would have printed
+a green "97 passed" even with real, failing assertions inside. Flagging
+this explicitly rather than silently patching it, since it changes how
+much a bare pytest run can be trusted going forward (now: fully: a
+failing check() will fail its pytest test too).
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- csv_import.py's customer/staff creation paths still use the older
+  create_person_and_customer()/raw-INSERT pattern, not yet swapped to
+  the identity-match primitive -- same "separate follow-up" note as
+  every prior cycle, now with TWO real consumers (customer intake,
+  staff intake) proving the pattern, making CSV import the last
+  Phase 1 write-path still bypassing platform.match_or_create_person().
+- No Collision-specific /staff-match-queue admin route -- a queued
+  staff match is resolved through Elektrica's existing shared
+  platform.person_match_queue admin surface, same as the customer-intake
+  gap flagged last cycle.
+- Same CCC ONE license question / migration 011 payment_source enum /
+  migration 006 cost-category review / gross_revenue audit-trail design
+  blockers as every prior cycle, unchanged, all still awaiting Jed.
+- scripts/_smoke_http_*.py-style standalone smoke scripts use the same
+  check()/FAILED pattern but were NOT touched by this cycle's raise-fix
+  -- they're never pytest-discovered (no test_ prefix in the typical
+  case, and run manually via `python scripts/_smoke_http_....py`, not
+  `pytest`), so their own FAILED-list + sys.exit(1) already worked
+  correctly; flagging only for completeness, not treating as a bug.
+
+Next up: swap csv_import.py's person-creation paths to
+match_or_create_and_provision_staff()'s sibling
+match_or_create_and_link_customer() (now proven by 2 real consumers);
+same open Jed-blocked items as every prior cycle otherwise.
+
 

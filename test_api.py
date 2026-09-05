@@ -49,11 +49,26 @@ def _sample_ro(**overrides) -> RepairOrder:
 
 
 def check(name: str, condition: bool, detail: str = ""):
+    """Prints PASS/FAIL AND raises AssertionError on failure (fixed this
+    cycle -- previously only appended to FAILED without raising, which
+    meant pytest saw the enclosing test function return normally and
+    reported it as passed regardless of how many checks inside it
+    actually failed; the ONLY thing that ever caught a real check()
+    failure was manually running this file's own __main__ block, which
+    had ALSO drifted stale (a hardcoded list missing 14 of the 97 real
+    test_ functions pytest discovers here, including several added this
+    cycle) -- so a genuinely broken check() inside a newer test could
+    have silently reported green forever. Every prior WORKLOG '173/173
+    passed'-style claim was validated by that manual run, not by pytest
+    itself, and is not invalidated by this fix (this cycle's fresh run of
+    both the corrected pytest suite AND python test_api.py directly
+    confirms all still genuinely pass -- see WORKLOG.md)."""
     if condition:
         print(f"PASS: {name}")
     else:
         print(f"FAIL: {name} {detail}")
         FAILED.append(name)
+        raise AssertionError(f"{name}: {detail}")
 
 
 def test_health():
@@ -893,6 +908,87 @@ def test_provision_staff_duplicate_returns_400():
     check("test_provision_staff_duplicate_returns_400", r.status_code == 400, r.text)
 
 
+# ---------------------------------------------------------------------------
+# POST /staff/intake (this cycle: real identity-match staff onboarding,
+# closes the gap provision_new_staff_user()'s docstring flagged since
+# migration 001/004 -- mirrors test_intake_customer_* below exactly).
+# ---------------------------------------------------------------------------
+
+def test_intake_staff_attached():
+    result = repo_mod.StaffIntakeResult(
+        match_status="attached", person_id=1, queue_id=None, staff=_sample_staff(),
+    )
+    with patch("app.api.repo.match_or_create_and_provision_staff", return_value=result) as m:
+        r = client.post("/staff/intake", json={
+            "first_name": "Jane", "last_name": "Doe", "role": "manager",
+            "google_email": "jane.doe@completecollisions.com", "actor": "jed",
+            "personal_email": "Jane@Example.com  ", "personal_phone": "(512) 555-0100",
+        })
+    check("test_intake_staff_attached_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_staff_attached_match_status", body["match_status"] == "attached", body)
+    check("test_intake_staff_attached_staff", body["staff"]["google_email"] == "jane.doe@completecollisions.com", body)
+    check("test_intake_staff_attached_queue_id_none", body["queue_id"] is None, body)
+    # personal contact info normalized BEFORE reaching the repository call;
+    # google_email passed through UNNORMALIZED-by-this-path since the repo
+    # function/provision_staff_user_for_existing_person do their own
+    # google_email.strip().lower() internally (same as every other staff route).
+    _, kwargs = m.call_args
+    check("test_intake_staff_email_normalized", kwargs["email_normalized"] == "jane@example.com", kwargs)
+    check("test_intake_staff_phone_normalized", kwargs["phone_normalized"] == "5125550100", kwargs)
+
+
+def test_intake_staff_created():
+    result = repo_mod.StaffIntakeResult(
+        match_status="created", person_id=42, queue_id=None,
+        staff=_sample_staff(id=2, person_id=42, google_email="new.hire@completecollisions.com"),
+    )
+    with patch("app.api.repo.match_or_create_and_provision_staff", return_value=result):
+        r = client.post("/staff/intake", json={
+            "first_name": "New", "last_name": "Hire", "role": "receptionist",
+            "google_email": "new.hire@completecollisions.com", "actor": "jed",
+        })
+    check("test_intake_staff_created_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_staff_created_match_status", body["match_status"] == "created", body)
+    check("test_intake_staff_created_person_id", body["person_id"] == 42, body)
+
+
+def test_intake_staff_queued_no_staff_row():
+    result = repo_mod.StaffIntakeResult(
+        match_status="queued", person_id=1, queue_id=99, staff=None,
+    )
+    with patch("app.api.repo.match_or_create_and_provision_staff", return_value=result):
+        r = client.post("/staff/intake", json={
+            "first_name": "Possibly", "last_name": "SamePerson", "role": "manager",
+            "google_email": "possibly.same@completecollisions.com", "actor": "jed",
+            "date_of_birth": "1985-06-15",
+        })
+    check("test_intake_staff_queued_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_intake_staff_queued_match_status", body["match_status"] == "queued", body)
+    check("test_intake_staff_queued_no_staff", body["staff"] is None, body)
+    check("test_intake_staff_queued_has_queue_id", body["queue_id"] == 99, body)
+
+
+def test_intake_staff_bad_role_returns_400():
+    r = client.post("/staff/intake", json={
+        "first_name": "Bad", "last_name": "Role", "role": "not_a_role",
+        "google_email": "bad.role@completecollisions.com", "actor": "jed",
+    })
+    check("test_intake_staff_bad_role_returns_400", r.status_code == 400, r.text)
+
+
+def test_intake_staff_duplicate_returns_400():
+    with patch("app.api.repo.match_or_create_and_provision_staff",
+               side_effect=ValueError("staff_user with google_email='dup@completecollisions.com' already exists")):
+        r = client.post("/staff/intake", json={
+            "first_name": "Dup", "last_name": "Licate", "role": "manager",
+            "google_email": "dup@completecollisions.com", "actor": "jed",
+        })
+    check("test_intake_staff_duplicate_returns_400", r.status_code == 400, r.text)
+
+
 def test_list_staff():
     with patch("app.api.repo.list_staff_users", return_value=[_sample_staff(), _sample_staff(id=2, google_email="bob@completecollisions.com")]) as m:
         r = client.get("/staff")
@@ -1115,65 +1211,20 @@ def test_get_pdr_crew_settlement_bad_month_returns_400():
 
 
 if __name__ == "__main__":
-    tests = [
-        test_health, test_get_job_found, test_get_job_not_found,
-        test_list_jobs_no_filters, test_list_jobs_with_filters_passes_enums_through,
-        test_list_jobs_bad_status_returns_400, test_list_jobs_bad_category_returns_400,
-        test_create_job_success, test_create_job_duplicate_ro_number_returns_400,
-        test_create_job_bad_category_returns_400, test_create_job_bad_status_returns_400,
-        test_create_job_nonexistent_person_id_returns_400,
-        test_create_job_repo_value_error_returns_400,
-        test_get_job_events,
-        test_transition_job_success, test_transition_job_illegal_returns_400,
-        test_transition_job_bad_status_value_returns_400,
-        test_patch_job_intake_partial_update_only_passes_supplied_fields,
-        test_patch_job_intake_explicit_null_clears_field,
-        test_patch_job_intake_job_not_found_returns_404,
-        test_get_job_costs,
-        test_add_job_cost, test_add_job_cost_bad_category_returns_400,
-        test_add_job_cost_negative_amount_returns_400, test_recalculate_job_costs,
-        test_job_not_found_on_costs_endpoint,
-        test_get_job_estimates, test_get_job_estimates_job_not_found,
-        test_get_job_latest_estimate_found, test_get_job_latest_estimate_none_yet,
-        test_create_job_estimate_success, test_create_job_estimate_job_not_found,
-        test_create_job_estimate_repo_value_error_returns_400,
-        test_get_job_payments, test_get_job_payments_job_not_found,
-        test_create_job_payment_success, test_create_job_payment_job_not_found,
-        test_create_job_payment_bad_source_returns_400,
-        test_create_job_payment_nonpositive_amount_returns_400,
-        test_create_job_payment_authorize_net_missing_txn_id_returns_400,
-        test_create_job_payment_bad_received_at_returns_400,
-        test_get_job_payments_summary, test_get_job_payments_summary_job_not_found,
-        test_get_customer_by_person_found, test_get_customer_by_person_not_found,
-        test_get_customer_vehicles, test_get_customer_vehicles_empty,
-        test_get_vehicle_by_vin_found, test_get_vehicle_by_vin_not_found,
-        test_list_sites, test_list_sites_active_only, test_list_sites_empty,
-        test_get_site_found, test_get_site_not_found,
-        test_set_site_active_deactivate, test_set_site_active_unknown_returns_404,
-        test_create_content_item_success, test_create_content_item_missing_filename_returns_400,
-        test_create_content_item_bad_uploaded_at_returns_400,
-        test_get_content_item_found, test_get_content_item_not_found,
-        test_search_content_items,
-        test_get_job_content_items, test_get_job_content_items_job_not_found,
-        test_update_content_item_tags_success, test_update_content_item_tags_bad_source_returns_400,
-        test_update_content_item_tags_not_found_returns_404,
-        test_provision_staff_success, test_provision_staff_bad_role_returns_400,
-        test_provision_staff_duplicate_returns_400,
-        test_get_staff_found, test_get_staff_not_found,
-        test_get_staff_capability_active, test_get_staff_capability_unknown_email_404,
-        test_set_staff_active_deactivate, test_set_staff_active_unknown_returns_404,
-        test_import_csv_customers_dry_run_default,
-        test_import_csv_commit_true_passed_through_as_not_dry_run,
-        test_import_csv_with_errors_reports_ok_false,
-        test_import_csv_unknown_kind_returns_400,
-        test_get_pdr_crew_settlement_success,
-        test_get_pdr_crew_settlement_unknown_site_returns_404,
-        test_get_pdr_crew_settlement_bad_month_returns_400,
-    ]
+    # Fixed this cycle: was a hand-maintained list that had drifted stale
+    # (83 hardcoded names vs 97 real test_ functions pytest discovers in
+    # this file -- 14 tests, including this cycle's new
+    # test_intake_staff_* ones, were silently unreachable by the only
+    # mechanism that actually caught a check() failure before this file's
+    # check() was also fixed to raise). Introspecting globals() instead,
+    # same discipline test_csv_import.py already uses, so this can never
+    # drift stale again.
+    tests = [obj for name, obj in list(globals().items()) if name.startswith("test_") and callable(obj)]
     for t in tests:
         t()
     total = len(tests)
     passed = total - len(FAILED)
     print(f"\n{passed}/{total} tests passed")
     if FAILED:
+        print("FAILED:", FAILED)
         raise SystemExit(1)

@@ -1122,17 +1122,18 @@ def provision_new_staff_user(
     provision_staff_user_for_existing_person() against a person row an
     admin already created, not this convenience wrapper.
 
-    *** GAP NOW CLOSED, NOT YET WIRED HERE (per hermes, 2026-09-06):
-    same platform.match_or_create_person() note as
-    create_person_and_customer()'s docstring above -- NEXT TIME THIS
-    FUNCTION IS TOUCHED, swap the raw INSERT below for a call to
-    platform.match_or_create_person() via platform_identity_service
-    instead of blindly creating a new person row every time a staff
-    member is provisioned (a real staff member could plausibly already
-    exist as a platform.person from being a customer/renter elsewhere in
-    the shared schema -- exactly the cross-business case this bot's own
-    memory tracks). Not done in this pass; see WORKLOG.md's 2026-09-06
-    entry. ***
+    *** SUPERSEDED, NOT REMOVED (this cycle): match_or_create_and_
+    provision_staff() below is now the preferred path -- it routes
+    through platform.match_or_create_person() so a person hired as staff
+    who already exists as a Collision customer or an Elektrica renter
+    (the real cross-business case this bot's own memory tracks) attaches
+    to their existing platform.person row instead of getting a silent
+    duplicate. This function is kept only because
+    scripts/_smoke_010_app_layer.py and other admin fixtures still call
+    it for deliberately-synthetic test people where identity matching is
+    not the thing being tested; new provisioning code paths (the API
+    route, real onboarding scripts) should call
+    match_or_create_and_provision_staff() instead. ***
     """
     email_normalized = google_email.strip().lower()
     cur.execute(
@@ -1147,6 +1148,99 @@ def provision_new_staff_user(
     return provision_staff_user_for_existing_person(
         cur, person_id, role, google_email, actor,
         provisioned_by_staff_user_id=provisioned_by_staff_user_id,
+    )
+
+
+class StaffIntakeResult:
+    """Return shape for match_or_create_and_provision_staff() -- same
+    three-outcome shape as CustomerIntakeResult above, for the identical
+    reason: 'queued' is a real outcome with no collision.staff_user row
+    created yet, pending human review of the match.
+    """
+
+    def __init__(self, match_status: str, person_id: int,
+                 queue_id: Optional[int] = None, staff: Optional[StaffUser] = None):
+        self.match_status = match_status  # 'attached' | 'queued' | 'created'
+        self.person_id = person_id
+        self.queue_id = queue_id
+        self.staff = staff
+
+
+def match_or_create_and_provision_staff(
+    cur, first_name: str, last_name: str, role: StaffRole, google_email: str, actor: str,
+    date_of_birth: Optional[date] = None,
+    email_normalized: Optional[str] = None,
+    phone_normalized: Optional[str] = None,
+    provisioned_by_staff_user_id: Optional[int] = None,
+) -> StaffIntakeResult:
+    """Real staff-onboarding path via the shared identity primitive --
+    closes the gap provision_new_staff_user()'s docstring flagged since
+    migration 001/004, exactly mirroring
+    match_or_create_and_link_customer()'s approach above (same
+    SET ROLE platform_identity_service / RESET ROLE sequencing in one
+    transaction, same three-way match_status branch, same
+    REQUIRES A PRIVILEGED CURSOR caveat -- see that function's docstring
+    for the full grant-gap explanation, not repeated here).
+
+    IMPORTANT distinction from CustomerIntakeResult's inputs:
+    email_normalized/phone_normalized here are the new hire's PERSONAL
+    contact info used ONLY for platform.person identity matching (e.g.
+    the person already exists as a Collision customer or an Elektrica
+    renter under a personal email) -- NOT google_email, which is always
+    the company address (@completecollisions.com, migrations/009's CHECK
+    constraint) and is written to collision.staff_user.google_email
+    regardless of match outcome. Passing google_email as
+    email_normalized would be wrong: a brand-new hire's company email
+    was just created moments ago by IT and will never already exist in
+    platform.person, defeating the whole point of matching.
+
+    Branch on match_status:
+      - 'attached' or 'created': resolved with confidence -- provision
+        (or find-existing) the collision.staff_user row via
+        provision_staff_user_for_existing_person(). If a staff_user
+        already exists for this person+google_email, that function's own
+        ValueError propagates unchanged (duplicate-provisioning guard,
+        same as before this change).
+      - 'queued': does NOT create a collision.staff_user row -- returns
+        staff=None and the real queue_id for a human to resolve via the
+        shared platform.person_match_queue admin action (same shared
+        surface match_or_create_and_link_customer()'s docstring
+        describes, no Collision-specific admin route needed unless Jed
+        wants one).
+
+    Callers should normalize email/phone via app.normalize before
+    calling this, same convention as match_or_create_and_link_customer().
+    """
+    cur.execute("SET ROLE platform_identity_service")
+    try:
+        cur.execute(
+            """
+            SELECT * FROM platform.match_or_create_person(%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (first_name, last_name, date_of_birth, email_normalized,
+             phone_normalized, "collision", actor),
+        )
+        match_row = cur.fetchone()
+    finally:
+        cur.execute("RESET ROLE")
+
+    person_id = match_row["person_id"]
+    match_status = match_row["match_status"]
+    queue_id = match_row["queue_id"]
+
+    if match_status == "queued":
+        return StaffIntakeResult(
+            match_status=match_status, person_id=person_id,
+            queue_id=queue_id, staff=None,
+        )
+
+    staff = provision_staff_user_for_existing_person(
+        cur, person_id, role, google_email, actor,
+        provisioned_by_staff_user_id=provisioned_by_staff_user_id,
+    )
+    return StaffIntakeResult(
+        match_status=match_status, person_id=person_id,
+        queue_id=None, staff=staff,
     )
 
 
