@@ -7,6 +7,7 @@ import NewJobPage from './pages/NewJobPage';
 import NewCustomerPage from './pages/NewCustomerPage';
 import JobLookupPage from './pages/JobLookupPage';
 import StaffAdminPage from './pages/StaffAdminPage';
+import StaffIntakePage from './pages/StaffIntakePage';
 import SettlementPage from './pages/SettlementPage';
 
 const NAV_ITEMS = [
@@ -31,6 +32,7 @@ function AppShell() {
     navItems.find((n) => n.to === location.pathname)?.label ??
     (location.pathname === '/jobs/new' ? 'New Job'
       : location.pathname === '/customers/new' ? 'New Customer'
+      : location.pathname === '/staff/new' ? 'Onboard Staff'
       : location.pathname.startsWith('/jobs/') ? 'Job Detail'
       : 'Complete Collision');
 
@@ -68,6 +70,7 @@ function AppShell() {
           <Route path="/lookup" element={<JobLookupPage />} />
           <Route path="/settlement" element={<SettlementPage />} />
           <Route path="/staff" element={<StaffAdminPage />} />
+          <Route path="/staff/new" element={<StaffIntakePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

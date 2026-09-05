@@ -212,6 +212,33 @@ export interface CustomerIntakeResult {
   customer: Customer | null;
 }
 
+// Staff intake (POST /staff/intake) — mirrors CustomerIntakeRequest/Result
+// above, matching app/api.py's StaffIntakeRequest/StaffIntakeOut 1:1.
+// google_email is always the COMPANY address (written to
+// collision.staff_user regardless of match outcome); personal_email/
+// personal_phone/date_of_birth are the new hire's PERSONAL contact info,
+// used only for platform.person identity matching (see app/api.py's
+// StaffIntakeRequest docstring) — do NOT pass google_email as
+// personal_email, it will never match anything.
+export interface StaffIntakeRequest {
+  first_name: string;
+  last_name: string;
+  role: StaffRole;
+  google_email: string;
+  actor: string;
+  date_of_birth?: string; // YYYY-MM-DD
+  personal_email?: string;
+  personal_phone?: string;
+  provisioned_by_staff_user_id?: number;
+}
+
+export interface StaffIntakeResult {
+  match_status: 'attached' | 'created' | 'queued';
+  person_id: number;
+  queue_id: number | null;
+  staff: StaffUser | null;
+}
+
 export const api = {
   apiFetchPerson: (personId: string | number) => apiFetch<PersonPreview>(`/persons/${personId}`),
 
@@ -272,4 +299,9 @@ export const api = {
   // Customer intake (new/returning customer identity resolution)
   intakeCustomer: (body: CustomerIntakeRequest) =>
     apiFetch<CustomerIntakeResult>('/customers/intake', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Staff intake (new-hire identity resolution; onboards via personal
+  // contact info instead of requiring an already-known person_id)
+  intakeStaff: (body: StaffIntakeRequest) =>
+    apiFetch<StaffIntakeResult>('/staff/intake', { method: 'POST', body: JSON.stringify(body) }),
 };

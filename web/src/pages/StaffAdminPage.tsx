@@ -11,6 +11,7 @@
 // keeps a lighter version of it (warn if deactivating the last active
 // owner) since owner is the closest analogue to VLS's "admin".
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, type StaffUser, type StaffRole } from '../api';
 import { useAuth, getActor } from '../auth';
 
@@ -114,7 +115,10 @@ export default function StaffAdminPage() {
       </form>
       <p style={{ fontSize: 11.5, color: 'var(--cc-gray)', marginTop: -16, marginBottom: 20 }}>
         person_id must reference an already-existing platform.person row —
-        this cannot create a brand new person (see README/open questions).
+        this cannot create a brand new person. Onboarding a genuinely new
+        hire (no known person_id yet)? Use{' '}
+        <Link to="/staff/new">Onboard Staff</Link> instead, which resolves
+        identity from personal contact info first.
       </p>
 
       <table className="cc-table">
