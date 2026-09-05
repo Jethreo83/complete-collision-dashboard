@@ -20,9 +20,11 @@ from decimal import Decimal
 from typing import Optional
 
 from app.models import (
+    ContentItem,
     CostCategory,
     CostEntry,
     Customer,
+    DerivedTagsSource,
     Estimate,
     EstimateSource,
     JobCategory,
@@ -590,6 +592,132 @@ def get_estimates_for_job(cur, ro_number: str) -> list[Estimate]:
 def get_latest_estimate_for_job(cur, ro_number: str) -> Optional[Estimate]:
     estimates = get_estimates_for_job(cur, ro_number)
     return estimates[-1] if estimates else None
+
+
+# ---------------------------------------------------------------------------
+# ContentItem (migrations/005, PRODUCTION since 2026-09-04 -- schema only
+# until this cycle; no app layer existed for it before now). See
+# app/models.ContentItem's docstring for the two write paths this
+# supports (dashboard-native upload vs. a future bulk JSON import from
+# content_manifest.json, the latter still blocked on export access to
+# "the mini" per every prior WORKLOG entry -- NOT built here).
+# ---------------------------------------------------------------------------
+
+_CONTENT_ITEM_COLUMNS = [
+    "source_manifest_id", "import_source_file", "business", "collection",
+    "description", "drive_id", "filename", "mime", "proxy_url", "ro_number",
+    "service", "size", "smr", "source", "stage", "status", "thumbnail",
+    "type", "uploaded_at", "uploader", "url", "video_type", "web_view_link",
+]
+
+
+def create_content_item(cur, item: ContentItem, actor: str) -> ContentItem:
+    """Dashboard-native content upload (Phase 1 path). Does not touch
+    derived_tags/derived_tags_source at creation -- those start at the
+    DB's own default ([]/'unset') and are only ever set afterward via
+    update_content_item_tags(), so it's always explicit which mechanism
+    (ai/human) supplied a given tag set, never silently defaulted."""
+    values = [getattr(item, col) for col in _CONTENT_ITEM_COLUMNS]
+    placeholders = ", ".join(["%s"] * len(_CONTENT_ITEM_COLUMNS))
+    cur.execute(
+        f"""
+        INSERT INTO collision.content_item (
+            {", ".join(_CONTENT_ITEM_COLUMNS)}, created_by, updated_by
+        ) VALUES ({placeholders}, %s, %s)
+        RETURNING *
+        """,
+        (*values, actor, actor),
+    )
+    return _content_item_from_row(cur.fetchone())
+
+
+def get_content_item_by_id(cur, content_item_id: int) -> Optional[ContentItem]:
+    cur.execute("SELECT * FROM collision.content_item WHERE id = %s", (content_item_id,))
+    row = cur.fetchone()
+    return _content_item_from_row(row) if row else None
+
+
+def list_content_items_for_job(cur, ro_number: str) -> list[ContentItem]:
+    """Handoff §3.1's 'by RO' view -- a tolerant equality join, not a
+    hard FK (migrations/005's own header: the real manifest may reference
+    ROs that don't exist yet in collision.job)."""
+    cur.execute(
+        """
+        SELECT * FROM collision.content_item
+        WHERE ro_number = %s
+        ORDER BY uploaded_at NULLS LAST, id
+        """,
+        (ro_number,),
+    )
+    return [_content_item_from_row(r) for r in cur.fetchall()]
+
+
+def search_content_items(
+    cur, query: Optional[str] = None, limit: int = 50, offset: int = 0,
+) -> list[ContentItem]:
+    """Handoff §3.1's 'search across tags/description' need -- uses the
+    same to_tsvector(description) expression migrations/005 already
+    indexed (idx_content_item_description_fts), plus a plain substring
+    check against derived_tags so a tag-only search (no description text)
+    still matches, since GIN-over-jsonb doesn't directly support ILIKE."""
+    if query:
+        cur.execute(
+            """
+            SELECT * FROM collision.content_item
+            WHERE to_tsvector('english', coalesce(description, '')) @@ to_tsquery('english', %s)
+               OR derived_tags::text ILIKE %s
+            ORDER BY uploaded_at NULLS LAST, id
+            LIMIT %s OFFSET %s
+            """,
+            (query.replace(" ", " & "), f"%{query}%", limit, offset),
+        )
+    else:
+        cur.execute(
+            "SELECT * FROM collision.content_item ORDER BY uploaded_at NULLS LAST, id LIMIT %s OFFSET %s",
+            (limit, offset),
+        )
+    return [_content_item_from_row(r) for r in cur.fetchall()]
+
+
+def update_content_item_tags(
+    cur, content_item_id: int, derived_tags: list, derived_tags_source: DerivedTagsSource, actor: str,
+) -> ContentItem:
+    """The only way derived_tags/derived_tags_source ever change after
+    creation -- always records which mechanism (ai/human) supplied the
+    tags, per handoff §3.1's 'AI-assisted, human-editable' requirement.
+    Full replace, not merge (matches migrations/005's plain JSONB array
+    shape -- no per-tag identity to merge against)."""
+    cur.execute(
+        """
+        UPDATE collision.content_item
+        SET derived_tags = %s, derived_tags_source = %s, updated_at = now(), updated_by = %s
+        WHERE id = %s
+        RETURNING *
+        """,
+        (psycopg2_json(derived_tags), derived_tags_source.value, actor, content_item_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"no content_item with id={content_item_id!r}")
+    return _content_item_from_row(row)
+
+
+def _content_item_from_row(row) -> ContentItem:
+    return ContentItem(
+        id=row["id"], source_manifest_id=row["source_manifest_id"],
+        import_source_file=row["import_source_file"], business=row["business"],
+        collection=row["collection"], description=row["description"],
+        drive_id=row["drive_id"], filename=row["filename"], mime=row["mime"],
+        proxy_url=row["proxy_url"], ro_number=row["ro_number"], service=row["service"],
+        size=row["size"], smr=row["smr"], source=row["source"], stage=row["stage"],
+        status=row["status"], thumbnail=row["thumbnail"], type=row["type"],
+        uploaded_at=row["uploaded_at"], uploader=row["uploader"], url=row["url"],
+        video_type=row["video_type"], web_view_link=row["web_view_link"],
+        derived_tags=row["derived_tags"] if row["derived_tags"] is not None else [],
+        derived_tags_source=DerivedTagsSource(row["derived_tags_source"]),
+        created_at=row["created_at"], created_by=row["created_by"],
+        updated_at=row["updated_at"], updated_by=row["updated_by"],
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -372,6 +372,76 @@ class StaffUser:
         self.google_email = email
 
 
+class DerivedTagsSource(str, Enum):
+    """Matches collision.content_item's derived_tags_source (migrations/005,
+    production). 'ai' | 'human' | 'unset' -- see migrations/005 header,
+    handoff §3.1's 'AI-assisted, human-editable' requirement."""
+    AI = "ai"
+    HUMAN = "human"
+    UNSET = "unset"
+
+
+@dataclass
+class ContentItem:
+    """Mirrors collision.content_item (migrations/005, PRODUCTION --
+    schema-only since 2026-09-04; no app layer existed for it until this
+    cycle). filename is the only field this table requires -- every other
+    manifest field is nullable because the real content_manifest.json
+    import (141 KB, lives on "the mini") is still blocked on export
+    access; see migrations/005 header. This dataclass therefore supports
+    two distinct write paths without conflating them:
+      1. Dashboard-native uploads (Phase 1, what this cycle's app layer
+         actually exercises) -- source_manifest_id/import_source_file
+         stay None, filename + whatever metadata a human enters at upload
+         time.
+      2. A future bulk JSON import (not built here) -- would set
+         source_manifest_id/import_source_file and rely on migrations/005's
+         partial unique index on source_manifest_id for idempotency.
+    derived_tags defaults to an empty list/'unset' source per the DB
+    default -- this app layer does NOT auto-generate AI tags (no AI
+    tagging pipeline exists yet); update_derived_tags() in repository.py
+    is the only way tags change, and it always records which source
+    (ai/human) supplied them, never silently defaulting that away.
+    """
+    filename: str
+    source_manifest_id: Optional[str] = None
+    import_source_file: Optional[str] = None
+    business: Optional[str] = None
+    collection: Optional[str] = None
+    description: Optional[str] = None
+    drive_id: Optional[str] = None
+    mime: Optional[str] = None
+    proxy_url: Optional[str] = None
+    ro_number: Optional[str] = None  # bare TEXT, not FK -- see migrations/005 header
+    service: Optional[str] = None
+    size: Optional[int] = None
+    smr: Optional[str] = None
+    source: Optional[str] = None  # manifest's own 'source' field
+    stage: Optional[str] = None
+    status: Optional[str] = None
+    thumbnail: Optional[str] = None
+    type: Optional[str] = None
+    uploaded_at: Optional[datetime] = None
+    uploader: Optional[str] = None
+    url: Optional[str] = None
+    video_type: Optional[str] = None
+    web_view_link: Optional[str] = None
+    derived_tags: list = field(default_factory=list)
+    derived_tags_source: DerivedTagsSource = DerivedTagsSource.UNSET
+    id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.filename or not self.filename.strip():
+            raise ValueError(
+                "filename is required (collision.content_item's NOT NULL "
+                "constraint mirrors this)."
+            )
+
+
 def validate_transition(current: JobStatus, target: JobStatus) -> None:
     """Application-layer state-machine guard, per migrations/002's
     SIMPLIFICATION note: the DB does not enforce valid transitions yet (no

@@ -2451,4 +2451,113 @@ cost-category review, all still awaiting Jed's input.
 
 
 
+2026-09-05 (cron cycle, continuous-build -- collision.content_item app layer)
+------------------------------------------------------------------
+Re-checked git log/fetch/status first: clean, up to date with
+origin/main, no concurrent-session drift.
+
+Picked the next real gap, checked against WORKLOG/README: migrations/005
+(collision.content_item) has been live in PRODUCTION since 2026-09-04,
+but nothing in app/models.py, app/repository.py, or app/api.py ever
+referenced it -- a schema-only table with zero readers/writers, unlike
+every other production table. Closed that gap.
+
+FILES MODIFIED
+--------------
+app/models.py
+  Added ContentItem dataclass + DerivedTagsSource enum, mirroring
+  migrations/005's 22 manifest fields + derived_tags/derived_tags_source
+  1:1. filename is the only required field (__post_init__ mirrors the
+  DB's NOT NULL). Docstring explicitly distinguishes the two possible
+  write paths (dashboard-native upload vs. a future bulk JSON import)
+  so it's clear which one this cycle actually builds.
+
+app/repository.py
+  Added create_content_item(), get_content_item_by_id(),
+  list_content_items_for_job() (handoff §3.1's "by RO" view -- tolerant
+  equality join, no hard FK, matching migrations/005's own header),
+  search_content_items() (to_tsvector description search + a plain
+  derived_tags::text ILIKE fallback so tag-only queries still match),
+  update_content_item_tags() (the only way tags change after creation --
+  always records ai/human source explicitly, never silently defaulted).
+
+app/api.py
+  Added ContentItemOut/ContentItemCreateRequest/ContentItemTagsUpdateRequest
+  schemas + _content_item_to_out() converter, and five routes: POST
+  /content-items, GET /content-items/{id}, GET /content-items?q=...,
+  GET /jobs/{ro_number}/content-items, PATCH /content-items/{id}/tags.
+  Dashboard-native-upload scope only -- no actual file bytes handled;
+  metadata (filename/url/proxy_url/drive_id) is wherever the caller
+  already stored the file, same as every other manually-entered field
+  in this codebase. No route for a bulk JSON import (still blocked on
+  export access to "the mini").
+
+test_api.py
+  15 new tests (create happy-path, empty-filename 400, bad-ISO-date 400,
+  get found/404, search, job-scoped list found/404, tag-update
+  happy-path + bad-enum 400 + not-found 404). Suite now 135/135 (up from
+  124/124); standalone runner 73/73.
+
+FILES CREATED
+-------------
+scripts/_smoke_http_content_items.py
+  Real HTTP smoke test against staging (uvicorn + requests), same
+  discipline as every other smoke script in this directory.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- Full unit suite green: 135/135 (`python -m pytest -q`), plus the
+  standalone test_api.py runner independently (73/73).
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --project-id aged-art-92489373 --extended`
+  (reveals password inline); confirmed collision.content_item exists on
+  that connection before use.
+- uvicorn started against staging on :8010 (background terminal
+  session), /health confirmed 200, LISTENING PID confirmed via netstat.
+- scripts/_smoke_http_content_items.py: 17/17 checks passed against the
+  live server -- real INSERT with an intentionally orphaned ro_number
+  (confirms migrations/005's "not a hard FK" design still holds through
+  the app layer, not just at the SQL level), real to_tsvector search
+  match on description, real PATCH-then-re-GET round-trip confirming
+  JSONB actually persisted (not just echoed back in the PATCH response),
+  400s for empty filename / bad ISO date / bad tag-source enum, 404s for
+  an unknown content_item id and for the job-scoped route against a
+  nonexistent RO.
+- Independently re-verified 0 leftover content_item rows on staging via
+  a SEPARATE query matching the exact fixture filename, not just
+  trusting the smoke script's own internal cleanup-check.
+- uvicorn killed by its real LISTENING PID from `netstat -ano | grep
+  :8010 | grep LISTENING` (taskkill /F /PID), confirmed stopped via a
+  curl exit/000 status AND a follow-up netstat showing no LISTENING
+  entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No bulk content_manifest.json import -- still blocked on export access
+  to "the mini", unchanged from every prior cycle. This cycle's app
+  layer supports source_manifest_id/import_source_file in the schema so
+  a future import can use them, but does not build the importer itself
+  (nothing to import yet, and building an importer against a shape no
+  one has confirmed against real data would be guessing).
+- No actual file-upload/storage handling (multipart, Drive API, etc.) --
+  routes accept metadata only, matching every other "human already put
+  the data somewhere, this just records it" pattern in this codebase.
+- Migration 011 still NOT promoted to production -- payment_source enum
+  still needs Jed's confirmation, unchanged.
+- Migration 006 cost-category design still needs Jed's review before
+  any re-promotion, unchanged -- not touched this cycle.
+- Payment reversal/void design, gross_revenue post-intake edit audit-
+  trail design -- both still need Jed's input, unchanged.
+
+Next up: an AI-assisted tag-generation pipeline for content_item (handoff
+§3.1's "AI-assisted, human-editable" -- the human-editable half is now
+built via PATCH /content-items/{id}/tags, the AI-assisted half is not);
+once Jed confirms (or corrects) the payment_source enum, promote
+migration 011; payment reversal/void design; gross_revenue post-intake
+edit audit-trail design; migration 006 cost-category review -- all
+still awaiting Jed's input.
+
+
+
 

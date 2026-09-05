@@ -532,6 +532,38 @@ See `docs/ADR-001-complete-collision.md` §6.
 
 ## Not yet built
 
+- **Content library app layer (2026-09-05, this cron cycle):**
+  `collision.content_item` (migrations/005) has been live in
+  **production** since 2026-09-04 but had zero readers/writers until
+  now. Added `app.models.ContentItem`/`DerivedTagsSource`, five
+  repository functions (`create_content_item`, `get_content_item_by_id`,
+  `list_content_items_for_job`, `search_content_items`,
+  `update_content_item_tags`), and five HTTP routes: `POST
+  /content-items`, `GET /content-items/{id}`, `GET /content-items?q=...`
+  (full-text search over `description` + a plain substring match over
+  `derived_tags`), `GET /jobs/{ro_number}/content-items`, `PATCH
+  /content-items/{id}/tags`. Supports only the **dashboard-native
+  upload** path (metadata supplied directly by a human/UI, no file
+  bytes handled server-side) — the real bulk `content_manifest.json`
+  import (141 KB, handoff §3.1) remains blocked on export access to
+  "the mini", same as every prior cycle; nothing here fabricates or
+  guesses at that data. 15 new tests in `test_api.py` (create
+  happy-path, empty-filename 400, bad-ISO-date 400, get found/404,
+  search, job-scoped list found/404, tag-update happy-path + bad-enum
+  400 + not-found 404) — full suite now 135/135 (up from 124/124), 73/73
+  standalone `test_api.py` runner. Verified by **real HTTP execution**
+  against real staging Postgres (not just mocks): `scripts/
+  _smoke_http_content_items.py`, 17/17 checks passed — real INSERT with
+  an intentionally orphaned `ro_number` (confirms migrations/005's own
+  "not a hard FK" design still holds through the app layer), real
+  `to_tsvector` search match, real `PATCH`-then-re-`GET` round-trip
+  confirming JSONB persistence (not just the PATCH response echoing the
+  request), 400s for empty filename/bad ISO date/bad tag-source enum,
+  404s for unknown id and for the job-scoped route against a
+  nonexistent RO. Test row deleted by exact filename match, 0 rows
+  confirmed by an independent follow-up query; `uvicorn` killed by its
+  real listening PID (`netstat`), confirmed stopped via a failed `curl`
+  + a follow-up `netstat` showing no `LISTENING` entry.
 - **Migration 011 promotion** (`collision.payment`,
   `collision.job_payment_summary`) — written and verified on staging
   (6/6 checks passed, see WORKLOG.md 2026-09-04 entry), NOT promoted to

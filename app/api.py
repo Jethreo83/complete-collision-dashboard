@@ -38,7 +38,10 @@ from pydantic import BaseModel
 from app import csv_import
 from app import db
 from app import repository as repo
-from app.models import CostCategory, JobCategory, JobStatus, PaymentSource, RepairOrder, StaffRole
+from app.models import (
+    ContentItem, CostCategory, DerivedTagsSource, JobCategory, JobStatus,
+    PaymentSource, RepairOrder, StaffRole,
+)
 
 app = FastAPI(
     title="Complete Collision Dashboard API (Phase 1, internal/local only)",
@@ -220,6 +223,75 @@ class VehicleOut(BaseModel):
     customer_id: int
 
 
+class ContentItemOut(BaseModel):
+    """Mirrors collision.content_item (migrations/005, production).
+    All manifest fields optional except filename -- see
+    app.models.ContentItem's docstring for why (real content_manifest.json
+    import still blocked on export access to "the mini")."""
+    id: int
+    filename: str
+    source_manifest_id: Optional[str] = None
+    import_source_file: Optional[str] = None
+    business: Optional[str] = None
+    collection: Optional[str] = None
+    description: Optional[str] = None
+    drive_id: Optional[str] = None
+    mime: Optional[str] = None
+    proxy_url: Optional[str] = None
+    ro_number: Optional[str] = None
+    service: Optional[str] = None
+    size: Optional[int] = None
+    smr: Optional[str] = None
+    source: Optional[str] = None
+    stage: Optional[str] = None
+    status: Optional[str] = None
+    thumbnail: Optional[str] = None
+    type: Optional[str] = None
+    uploaded_at: Optional[str] = None
+    uploader: Optional[str] = None
+    url: Optional[str] = None
+    video_type: Optional[str] = None
+    web_view_link: Optional[str] = None
+    derived_tags: list = []
+    derived_tags_source: str
+
+
+class ContentItemCreateRequest(BaseModel):
+    """Dashboard-native upload metadata (Phase 1 path -- no actual file
+    bytes handled here; url/proxy_url/drive_id are wherever the caller
+    already stored the file, same as every other manually-entered field
+    in this codebase). filename is the only required field, matching
+    collision.content_item's own NOT NULL constraint."""
+    filename: str
+    actor: str
+    business: Optional[str] = None
+    collection: Optional[str] = None
+    description: Optional[str] = None
+    drive_id: Optional[str] = None
+    mime: Optional[str] = None
+    proxy_url: Optional[str] = None
+    ro_number: Optional[str] = None
+    service: Optional[str] = None
+    size: Optional[int] = None
+    smr: Optional[str] = None
+    source: Optional[str] = None
+    stage: Optional[str] = None
+    status: Optional[str] = None
+    thumbnail: Optional[str] = None
+    type: Optional[str] = None
+    uploaded_at: Optional[str] = None  # ISO 8601; None lets the DB default to now()
+    uploader: Optional[str] = None
+    url: Optional[str] = None
+    video_type: Optional[str] = None
+    web_view_link: Optional[str] = None
+
+
+class ContentItemTagsUpdateRequest(BaseModel):
+    derived_tags: list
+    derived_tags_source: str  # 'ai' | 'human'
+    actor: str
+
+
 class StaffUserOut(BaseModel):
     id: int
     person_id: int
@@ -370,6 +442,21 @@ def _vehicle_to_out(v) -> VehicleOut:
     return VehicleOut(
         id=v.id, vin=v.vin, make=v.make, model=v.model, year=v.year,
         customer_id=v.customer_id,
+    )
+
+
+def _content_item_to_out(ci) -> ContentItemOut:
+    return ContentItemOut(
+        id=ci.id, filename=ci.filename, source_manifest_id=ci.source_manifest_id,
+        import_source_file=ci.import_source_file, business=ci.business,
+        collection=ci.collection, description=ci.description, drive_id=ci.drive_id,
+        mime=ci.mime, proxy_url=ci.proxy_url, ro_number=ci.ro_number,
+        service=ci.service, size=ci.size, smr=ci.smr, source=ci.source,
+        stage=ci.stage, status=ci.status, thumbnail=ci.thumbnail, type=ci.type,
+        uploaded_at=ci.uploaded_at.isoformat() if ci.uploaded_at else None,
+        uploader=ci.uploader, url=ci.url, video_type=ci.video_type,
+        web_view_link=ci.web_view_link, derived_tags=ci.derived_tags,
+        derived_tags_source=ci.derived_tags_source.value,
     )
 
 
@@ -747,6 +834,83 @@ def get_vehicle_by_vin_route(vin: str, cur=Depends(get_cursor)):
     if vehicle is None:
         raise HTTPException(status_code=404, detail=f"No vehicle with vin={vin!r}")
     return _vehicle_to_out(vehicle)
+
+
+# ---------------------------------------------------------------------------
+# Content library (2026-09-05 cron cycle: closes the "no app layer" gap
+# flagged in WORKLOG.md since migrations/005 went to production on
+# 2026-09-04 -- collision.content_item existed as a schema-only table
+# with zero readers/writers until now. Real content_manifest.json bulk
+# import (141 KB, per handoff §3.1) remains blocked on export access to
+# "the mini"; these routes only support the dashboard-native upload path
+# (a human/UI supplies metadata directly), same discipline as every other
+# "don't fabricate the blocked data" decision in this repo. No actual
+# file bytes are handled here -- filename/url/proxy_url/drive_id point at
+# wherever the caller already stored the file (e.g. Drive), matching how
+# every other manually-entered field in this codebase works.
+# ---------------------------------------------------------------------------
+
+@app.post("/content-items", response_model=ContentItemOut)
+def create_content_item_route(body: ContentItemCreateRequest, cur=Depends(get_cursor)):
+    try:
+        uploaded_at = datetime.fromisoformat(body.uploaded_at) if body.uploaded_at else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"uploaded_at={body.uploaded_at!r} is not valid ISO 8601")
+    try:
+        item = ContentItem(
+            filename=body.filename, business=body.business, collection=body.collection,
+            description=body.description, drive_id=body.drive_id, mime=body.mime,
+            proxy_url=body.proxy_url, ro_number=body.ro_number, service=body.service,
+            size=body.size, smr=body.smr, source=body.source, stage=body.stage,
+            status=body.status, thumbnail=body.thumbnail, type=body.type,
+            uploaded_at=uploaded_at, uploader=body.uploader, url=body.url,
+            video_type=body.video_type, web_view_link=body.web_view_link,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    created = repo.create_content_item(cur, item, body.actor)
+    return _content_item_to_out(created)
+
+
+@app.get("/content-items/{content_item_id}", response_model=ContentItemOut)
+def get_content_item_route(content_item_id: int, cur=Depends(get_cursor)):
+    item = repo.get_content_item_by_id(cur, content_item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"No content_item with id={content_item_id!r}")
+    return _content_item_to_out(item)
+
+
+@app.get("/content-items", response_model=list[ContentItemOut])
+def search_content_items_route(
+    q: Optional[str] = None, limit: int = 50, offset: int = 0, cur=Depends(get_cursor),
+):
+    return [_content_item_to_out(i) for i in repo.search_content_items(cur, query=q, limit=limit, offset=offset)]
+
+
+@app.get("/jobs/{ro_number}/content-items", response_model=list[ContentItemOut])
+def get_job_content_items_route(ro_number: str, cur=Depends(get_cursor)):
+    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    return [_content_item_to_out(i) for i in repo.list_content_items_for_job(cur, ro_number)]
+
+
+@app.patch("/content-items/{content_item_id}/tags", response_model=ContentItemOut)
+def update_content_item_tags_route(
+    content_item_id: int, body: ContentItemTagsUpdateRequest, cur=Depends(get_cursor),
+):
+    try:
+        tags_source = DerivedTagsSource(body.derived_tags_source)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"derived_tags_source={body.derived_tags_source!r} must be one of "
+                   f"{[s.value for s in DerivedTagsSource]}",
+        )
+    try:
+        updated = repo.update_content_item_tags(cur, content_item_id, body.derived_tags, tags_source, body.actor)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _content_item_to_out(updated)
 
 
 # ---------------------------------------------------------------------------

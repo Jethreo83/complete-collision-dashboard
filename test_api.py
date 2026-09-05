@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 
 from app.api import app, get_cursor
 from app.models import (
-    CostCategory, CostEntry, Customer, Estimate, EstimateSource, JobCategory,
-    JobEvent, JobStatus, PaymentSource, RepairOrder, StaffRole, StaffUser,
-    Vehicle,
+    CostCategory, CostEntry, Customer, DerivedTagsSource, Estimate,
+    EstimateSource, JobCategory, JobEvent, JobStatus, PaymentSource,
+    RepairOrder, StaffRole, StaffUser, Vehicle, ContentItem,
 )
 
 FAILED = []
@@ -622,6 +622,108 @@ def test_get_vehicle_by_vin_not_found():
 
 
 # ---------------------------------------------------------------------------
+# Content library routes (2026-09-05 cron cycle -- collision.content_item
+# app layer, closing the gap flagged since migrations/005 went to
+# production with no readers/writers)
+# ---------------------------------------------------------------------------
+
+def _sample_content_item(**overrides) -> ContentItem:
+    defaults = dict(
+        id=1, filename="IMG_0001.jpg", ro_number="RO-10001", uploader="tech@completecollisions.com",
+        derived_tags=["red", "sedan"], derived_tags_source=DerivedTagsSource.HUMAN,
+    )
+    defaults.update(overrides)
+    return ContentItem(**defaults)
+
+
+def test_create_content_item_success():
+    with patch("app.api.repo.create_content_item", return_value=_sample_content_item()):
+        r = client.post("/content-items", json={"filename": "IMG_0001.jpg", "actor": "tech@completecollisions.com"})
+    check("test_create_content_item_success_status", r.status_code == 200, r.text)
+    check("test_create_content_item_success_body", r.json()["filename"] == "IMG_0001.jpg", r.text)
+
+
+def test_create_content_item_missing_filename_returns_400():
+    def _raise(*a, **k):
+        raise ValueError("filename is required")
+    with patch("app.api.repo.create_content_item", side_effect=_raise):
+        r = client.post("/content-items", json={"filename": "", "actor": "tech@completecollisions.com"})
+    check("test_create_content_item_missing_filename_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_content_item_bad_uploaded_at_returns_400():
+    r = client.post(
+        "/content-items",
+        json={"filename": "IMG_0001.jpg", "actor": "tech@completecollisions.com", "uploaded_at": "not-a-date"},
+    )
+    check("test_create_content_item_bad_uploaded_at_returns_400", r.status_code == 400, r.text)
+
+
+def test_get_content_item_found():
+    with patch("app.api.repo.get_content_item_by_id", return_value=_sample_content_item()):
+        r = client.get("/content-items/1")
+    check("test_get_content_item_found_status", r.status_code == 200, r.text)
+    check("test_get_content_item_found_tags", r.json()["derived_tags"] == ["red", "sedan"], r.text)
+
+
+def test_get_content_item_not_found():
+    with patch("app.api.repo.get_content_item_by_id", return_value=None):
+        r = client.get("/content-items/999")
+    check("test_get_content_item_not_found", r.status_code == 404)
+
+
+def test_search_content_items():
+    with patch("app.api.repo.search_content_items", return_value=[_sample_content_item()]):
+        r = client.get("/content-items?q=sedan")
+    check("test_search_content_items_status", r.status_code == 200, r.text)
+    check("test_search_content_items_count", len(r.json()) == 1, r.text)
+
+
+def test_get_job_content_items():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.list_content_items_for_job", return_value=[_sample_content_item()]):
+        r = client.get("/jobs/RO-10001/content-items")
+    check("test_get_job_content_items_status", r.status_code == 200, r.text)
+    check("test_get_job_content_items_count", len(r.json()) == 1, r.text)
+
+
+def test_get_job_content_items_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.get("/jobs/RO-NOPE/content-items")
+    check("test_get_job_content_items_job_not_found", r.status_code == 404)
+
+
+def test_update_content_item_tags_success():
+    updated = _sample_content_item(derived_tags=["blue", "coupe"], derived_tags_source=DerivedTagsSource.AI)
+    with patch("app.api.repo.update_content_item_tags", return_value=updated):
+        r = client.patch(
+            "/content-items/1/tags",
+            json={"derived_tags": ["blue", "coupe"], "derived_tags_source": "ai", "actor": "system"},
+        )
+    check("test_update_content_item_tags_success_status", r.status_code == 200, r.text)
+    check("test_update_content_item_tags_success_body", r.json()["derived_tags_source"] == "ai", r.text)
+
+
+def test_update_content_item_tags_bad_source_returns_400():
+    r = client.patch(
+        "/content-items/1/tags",
+        json={"derived_tags": ["blue"], "derived_tags_source": "not_a_real_source", "actor": "system"},
+    )
+    check("test_update_content_item_tags_bad_source_returns_400", r.status_code == 400, r.text)
+
+
+def test_update_content_item_tags_not_found_returns_404():
+    def _raise(*a, **k):
+        raise ValueError("no content_item with id=999")
+    with patch("app.api.repo.update_content_item_tags", side_effect=_raise):
+        r = client.patch(
+            "/content-items/999/tags",
+            json={"derived_tags": ["blue"], "derived_tags_source": "human", "actor": "system"},
+        )
+    check("test_update_content_item_tags_not_found_returns_404", r.status_code == 404, r.text)
+
+
+# ---------------------------------------------------------------------------
 # Staff routes (2026-09-06 backlog item #1)
 # ---------------------------------------------------------------------------
 
@@ -823,6 +925,13 @@ if __name__ == "__main__":
         test_get_customer_by_person_found, test_get_customer_by_person_not_found,
         test_get_customer_vehicles, test_get_customer_vehicles_empty,
         test_get_vehicle_by_vin_found, test_get_vehicle_by_vin_not_found,
+        test_create_content_item_success, test_create_content_item_missing_filename_returns_400,
+        test_create_content_item_bad_uploaded_at_returns_400,
+        test_get_content_item_found, test_get_content_item_not_found,
+        test_search_content_items,
+        test_get_job_content_items, test_get_job_content_items_job_not_found,
+        test_update_content_item_tags_success, test_update_content_item_tags_bad_source_returns_400,
+        test_update_content_item_tags_not_found_returns_404,
         test_provision_staff_success, test_provision_staff_bad_role_returns_400,
         test_provision_staff_duplicate_returns_400,
         test_get_staff_found, test_get_staff_not_found,
