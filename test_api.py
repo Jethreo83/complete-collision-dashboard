@@ -16,8 +16,9 @@ from fastapi.testclient import TestClient
 
 from app.api import app, get_cursor
 from app.models import (
-    CostCategory, CostEntry, Estimate, EstimateSource, JobCategory,
+    CostCategory, CostEntry, Customer, Estimate, EstimateSource, JobCategory,
     JobEvent, JobStatus, PaymentSource, RepairOrder, StaffRole, StaffUser,
+    Vehicle,
 )
 
 FAILED = []
@@ -563,6 +564,64 @@ def test_get_job_payments_summary_job_not_found():
 
 
 # ---------------------------------------------------------------------------
+# Customer / Vehicle lookup routes (2026-09-05 cron cycle)
+# ---------------------------------------------------------------------------
+
+def _sample_customer(**overrides) -> Customer:
+    defaults = dict(id=1, person_id=42, source="walk_in", elektrica_renter_ref=None)
+    defaults.update(overrides)
+    return Customer(**defaults)
+
+
+def _sample_vehicle(**overrides) -> Vehicle:
+    defaults = dict(id=1, customer_id=1, vin="1HGCM82633A004352", make="Honda", model="Accord", year=2003)
+    defaults.update(overrides)
+    return Vehicle(**defaults)
+
+
+def test_get_customer_by_person_found():
+    with patch("app.api.repo.get_customer_by_person_id", return_value=_sample_customer()):
+        r = client.get("/customers/by-person/42")
+    check("test_get_customer_by_person_found_status", r.status_code == 200, r.text)
+    check("test_get_customer_by_person_found_body", r.json()["person_id"] == 42, r.text)
+
+
+def test_get_customer_by_person_not_found():
+    with patch("app.api.repo.get_customer_by_person_id", return_value=None):
+        r = client.get("/customers/by-person/999")
+    check("test_get_customer_by_person_not_found", r.status_code == 404)
+
+
+def test_get_customer_vehicles():
+    with patch("app.api.repo.get_vehicles_by_customer", return_value=[_sample_vehicle()]):
+        r = client.get("/customers/1/vehicles")
+    check("test_get_customer_vehicles_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_get_customer_vehicles_count", len(body) == 1, body)
+    check("test_get_customer_vehicles_vin", body[0]["vin"] == "1HGCM82633A004352", body)
+
+
+def test_get_customer_vehicles_empty():
+    with patch("app.api.repo.get_vehicles_by_customer", return_value=[]):
+        r = client.get("/customers/999/vehicles")
+    check("test_get_customer_vehicles_empty_status", r.status_code == 200, r.text)
+    check("test_get_customer_vehicles_empty_body", r.json() == [], r.text)
+
+
+def test_get_vehicle_by_vin_found():
+    with patch("app.api.repo.get_vehicle_by_vin", return_value=_sample_vehicle()):
+        r = client.get("/vehicles/by-vin/1HGCM82633A004352")
+    check("test_get_vehicle_by_vin_found_status", r.status_code == 200, r.text)
+    check("test_get_vehicle_by_vin_found_body", r.json()["make"] == "Honda", r.text)
+
+
+def test_get_vehicle_by_vin_not_found():
+    with patch("app.api.repo.get_vehicle_by_vin", return_value=None):
+        r = client.get("/vehicles/by-vin/NOSUCHVIN")
+    check("test_get_vehicle_by_vin_not_found", r.status_code == 404)
+
+
+# ---------------------------------------------------------------------------
 # Staff routes (2026-09-06 backlog item #1)
 # ---------------------------------------------------------------------------
 
@@ -761,6 +820,9 @@ if __name__ == "__main__":
         test_create_job_payment_authorize_net_missing_txn_id_returns_400,
         test_create_job_payment_bad_received_at_returns_400,
         test_get_job_payments_summary, test_get_job_payments_summary_job_not_found,
+        test_get_customer_by_person_found, test_get_customer_by_person_not_found,
+        test_get_customer_vehicles, test_get_customer_vehicles_empty,
+        test_get_vehicle_by_vin_found, test_get_vehicle_by_vin_not_found,
         test_provision_staff_success, test_provision_staff_bad_role_returns_400,
         test_provision_staff_duplicate_returns_400,
         test_get_staff_found, test_get_staff_not_found,

@@ -478,6 +478,27 @@ and requires clarification before any live integration is built.
   Cleanup by explicit ro_number-prefix/VIN-prefix/email/site-name
   match, independently re-verified 0 rows remaining on staging.
 
+- **New this cron cycle (2026-09-05, continuous-build):** added
+  `GET /customers/by-person/{person_id}`, `GET /customers/{customer_id}/vehicles`,
+  `GET /vehicles/by-vin/{vin}` — closes a real gap: `repo.
+  get_customer_by_person_id()`/`get_vehicles_by_customer()`/
+  `get_vehicle_by_vin()` have existed in `app/repository.py` since
+  migration 001's app layer but had no HTTP route; every existing job
+  route only exposes bare `customer_id`/`vehicle_id` integers, with no
+  way to look the entity itself up (e.g. "does this person already
+  have a customer record / what vehicles are on file" before intake).
+  Read-only by design — customer/vehicle creation stays inside
+  `POST /jobs` and `csv_import.py`'s existing find-or-create paths,
+  unchanged. New `CustomerOut`/`VehicleOut` schemas in `app/api.py`.
+  6 new tests in `test_api.py` — suite now 124/124 (up from 118/118).
+  **Verified by real HTTP execution against staging**
+  (`scripts/_smoke_http_customer_vehicle_lookup.py`, 14/14 checks):
+  real fixture person/customer/vehicle rows via direct SQL, then real
+  HTTP GETs confirming found/not-found for all three routes, including
+  the "customer exists but has zero vehicles" 200-empty-list case (not
+  a 404). Cleanup by explicit VIN/email match, independently
+  re-verified 0 rows remaining on staging via a separate query.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

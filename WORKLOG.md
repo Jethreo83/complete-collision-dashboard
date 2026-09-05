@@ -2368,6 +2368,86 @@ void design; gross_revenue post-intake edit audit-trail design still
 needs Jed's input.
 
 
+2026-09-05 (cron cycle, continuous-build -- customer/vehicle lookup routes)
+------------------------------------------------------------------
+Re-checked git log/fetch/status first: clean, up to date with
+origin/main, no concurrent-session drift (0 commits behind origin/main).
+
+Picked the next real gap: app/repository.py's get_customer_by_person_id()/
+get_vehicles_by_customer()/get_vehicle_by_vin() have existed since
+migration 001's app layer but were never wired to an HTTP route --
+every job route only exposes bare customer_id/vehicle_id integers, with
+no way to look the customer/vehicle entity itself up directly (a real
+pre-intake dashboard need: "does this person already have a customer
+record / what vehicles are on file", not a guessed feature).
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added CustomerOut/VehicleOut pydantic schemas and _customer_to_out()/
+  _vehicle_to_out() converters, plus three read-only GET routes:
+  GET /customers/by-person/{person_id}, GET /customers/{customer_id}/vehicles,
+  GET /vehicles/by-vin/{vin}. No POST/PATCH/DELETE -- creation stays
+  inside POST /jobs and csv_import.py's existing find-or-create paths,
+  unchanged (same "don't guess at unbuilt write semantics" discipline
+  as every other route in this file).
+
+test_api.py
+  6 new tests (customer found/not-found, vehicles-for-customer with
+  results and the zero-vehicles-is-200-empty-not-404 case, vehicle-by-
+  vin found/not-found), mocked repository calls, no DB dependency.
+  Suite now 124/124 (up from 118/118).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_customer_vehicle_lookup.py
+  Real HTTP smoke test against staging (uvicorn + requests), same
+  discipline as every other smoke script in this directory.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift (0 commits
+  behind origin/main).
+- Full unit suite green: 124/124 (`python -m pytest -q`), plus the
+  standalone test_api.py runner independently (62/62) -- same
+  "don't trust one runner" discipline as prior cycles.
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --project-id aged-art-92489373 --extended`
+  (reveals password inline); confirmed host ep-bold-leaf-a5dr4amg and
+  current_database=neondb before use.
+- uvicorn started against staging on :8010 (background terminal
+  session), /health confirmed 200, LISTENING PID confirmed via netstat.
+- scripts/_smoke_http_customer_vehicle_lookup.py: 14/14 checks passed
+  against the live server (customer found by person_id, 404 for a
+  person with no customer row, exactly-1 vehicle for the fixture
+  customer, 200-empty-list for a customer with zero vehicles, vehicle
+  found/not-found by VIN).
+- Independently re-verified 0 leftover vehicle/person rows on staging
+  via a SEPARATE query (not just trusting the smoke script's own
+  internal cleanup-check).
+- uvicorn killed by its real LISTENING PID from `netstat -ano | grep
+  :8010 | grep LISTENING` (taskkill /F /PID), confirmed stopped via a
+  curl exit/000 status AND a follow-up netstat showing no LISTENING
+  entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 011 (collision.payment) still NOT promoted to production --
+  payment_source enum still needs Jed's confirmation, unchanged.
+- Migration 006 cost-category design still needs Jed's review before
+  any re-promotion, unchanged -- not touched this cycle.
+- Payment reversal/void design, gross_revenue post-intake edit audit-
+  trail design -- both still need Jed's input, unchanged.
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+- No PATCH/POST/DELETE added for customer/vehicle -- deliberately
+  read-only this cycle; write paths remain inside POST /jobs and
+  csv_import.py by design (not an oversight).
+
+Next up: once Jed confirms (or corrects) the payment_source enum,
+promote migration 011 to production; payment reversal/void design;
+gross_revenue post-intake edit audit-trail design; migration 006
+cost-category review, all still awaiting Jed's input.
 
 
 

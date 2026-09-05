@@ -195,6 +195,31 @@ class JobPaymentSummaryOut(BaseModel):
     last_payment_at: Optional[str] = None
 
 
+class CustomerOut(BaseModel):
+    """Mirrors collision.customer (migrations/001). Closes a real gap:
+    repo.get_customer_by_person_id()/get_vehicles_by_customer()/
+    get_vehicle_by_vin() have existed since migration 001's app layer but
+    were never wired to an HTTP route -- every existing route that reads
+    a customer/vehicle does so only as a side effect of a job lookup
+    (RepairOrderOut exposes bare customer_id/vehicle_id ints, no way to
+    look the entity itself up directly). This is a read-only lookup
+    route; customer/vehicle creation stays inside POST /jobs and
+    csv_import.py's find-or-create paths, unchanged."""
+    id: int
+    person_id: int
+    source: str
+    elektrica_renter_ref: Optional[int] = None
+
+
+class VehicleOut(BaseModel):
+    id: int
+    vin: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+    customer_id: int
+
+
 class StaffUserOut(BaseModel):
     id: int
     person_id: int
@@ -331,6 +356,20 @@ def _payment_to_out(p) -> PaymentOut:
         external_transaction_id=p.external_transaction_id, amount=p.amount,
         received_at=p.received_at.isoformat() if p.received_at else None,
         accounting_sync_ref=p.accounting_sync_ref,
+    )
+
+
+def _customer_to_out(c) -> CustomerOut:
+    return CustomerOut(
+        id=c.id, person_id=c.person_id, source=c.source,
+        elektrica_renter_ref=c.elektrica_renter_ref,
+    )
+
+
+def _vehicle_to_out(v) -> VehicleOut:
+    return VehicleOut(
+        id=v.id, vin=v.vin, make=v.make, model=v.model, year=v.year,
+        customer_id=v.customer_id,
     )
 
 
@@ -675,6 +714,39 @@ def get_job_payments_summary(ro_number: str, cur=Depends(get_cursor)):
         total_collected=summary["total_collected"], payment_count=summary["payment_count"],
         last_payment_at=summary["last_payment_at"].isoformat() if summary["last_payment_at"] else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Customer / Vehicle lookup (2026-09-05 cron cycle: closes a real gap --
+# repo.get_customer_by_person_id()/get_vehicles_by_customer()/
+# get_vehicle_by_vin() existed since migration 001's app layer with no
+# HTTP route ever wired to them; every job route only exposes bare
+# customer_id/vehicle_id integers, with no way to look the entity itself
+# up (e.g. "does this person already have a customer record / what
+# vehicles do they have on file" -- a real dashboard need before intake,
+# not a guess). Read-only by design: creation stays inside POST /jobs and
+# csv_import.py's existing find-or-create paths, unchanged.
+# ---------------------------------------------------------------------------
+
+@app.get("/customers/by-person/{person_id}", response_model=CustomerOut)
+def get_customer_by_person(person_id: int, cur=Depends(get_cursor)):
+    customer = repo.get_customer_by_person_id(cur, person_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail=f"No customer linked to person_id={person_id!r}")
+    return _customer_to_out(customer)
+
+
+@app.get("/customers/{customer_id}/vehicles", response_model=list[VehicleOut])
+def get_customer_vehicles(customer_id: int, cur=Depends(get_cursor)):
+    return [_vehicle_to_out(v) for v in repo.get_vehicles_by_customer(cur, customer_id)]
+
+
+@app.get("/vehicles/by-vin/{vin}", response_model=VehicleOut)
+def get_vehicle_by_vin_route(vin: str, cur=Depends(get_cursor)):
+    vehicle = repo.get_vehicle_by_vin(cur, vin)
+    if vehicle is None:
+        raise HTTPException(status_code=404, detail=f"No vehicle with vin={vin!r}")
+    return _vehicle_to_out(vehicle)
 
 
 # ---------------------------------------------------------------------------
