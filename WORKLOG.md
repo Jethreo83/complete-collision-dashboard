@@ -2659,4 +2659,100 @@ post-intake edit audit-trail design; migration 006 cost-category review
 -- all still awaiting Jed's input.
 
 
+Session: 2026-09-05 cron cycle (continuous-build -- GET /settlements/pdr-crew,
+wiring pdr_settlement.py to real job data)
+
+FILES CREATED
+-------------
+app/settlement.py -- build_monthly_settlement()/build_monthly_settlement_statement(),
+wiring pdr_settlement.py's tested-since-2026-09-04 PDR Crew settlement
+calculator to real collision.job data for the first time. ADR-001 §7
+flags this feature as a strong v1 candidate NOT blocked by the CCC ONE
+license question or any pending Jed-input item.
+test_settlement.py -- 10 tests, no DB dependency (mocks app.repository):
+exact 70/30 and 5/95 split math against hand-computed values, unknown-site
+and malformed-month ValueErrors, zero-jobs case, PDR category correctly
+ignoring a nonzero labor_cost (PDR only nets direct_ro_costs).
+scripts/_smoke_http_settlement.py -- real HTTP smoke test against staging,
+19/19 checks passed.
+
+FILES MODIFIED
+--------------
+app/repository.py -- get_jobs_closed_in_month(site_id, month): jobs whose
+closed_at falls in the given YYYY-MM at the given site. Settlement cutover
+assumption (closed_at, not opened_at/collected_at) flagged for Jed in
+app/settlement.py's module docstring.
+app/api.py -- GET /settlements/pdr-crew?site_id=&month=. Still
+draft-and-hold per pdr_settlement.py's own module docstring: returns
+status="draft_held_for_review", never sends/emails anything to PDR Crew.
+Depends on collision.job.site_id (migrations/006, STAGING ONLY) -- same
+constraint GET /sites and GET /jobs?site_id= already carry.
+test_api.py -- 10 new tests (mocked route happy path incl.
+category/total/statement_text round-trip, unknown-site 404, bad-month 400).
+Full suite now 156/156 (up from 146/146), 76/76 standalone runner.
+README.md -- new cycle entry documenting the above.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- Full pytest suite: 156/156 (up from 146/146), no regressions.
+- Standalone test_api.py runner: 76/76 (up from 73/73).
+- Started a real uvicorn process against staging via the neon CLI
+  (neon connection-string staging --project-id aged-art-92489373
+  --role-name neondb_owner), confirmed /health 200, confirmed the real
+  LISTENING PID via netstat before treating it as up.
+- scripts/_smoke_http_settlement.py run against the live server: 19/19
+  real HTTP checks passed. Created 2 real fixture jobs (collision +
+  pdr category) via the actual repository functions the routes use
+  (create_customer_for_existing_person, get_or_create_vehicle,
+  get_or_create_site, create_repair_order, add_cost_entry -- respecting
+  migration 010's trigger-derived labor_cost/direct_ro_costs, no direct
+  column write), closed in a fixed test month, plus a 3rd fixture job
+  closed in a DIFFERENT month at the same site to prove the month filter
+  genuinely filters (confirmed excluded from both the category
+  ro_numbers list and the statement text, not just "included the right
+  ones" without checking exclusion). Confirmed exact net-profit and
+  split-share math for both categories against hand-calculated expected
+  values (collision: $600.00 net -> $420.00 CC / $180.00 PDR; pdr:
+  $450.00 net -> $22.50 CC / $427.50 PDR), confirmed total_owed_to_pdr
+  sums correctly, confirmed a month with zero closed jobs returns 200
+  with all-zero totals (not a 404), confirmed unknown site_id -> real
+  404 and malformed month -> real 400 through HTTP (not just
+  repository-layer exceptions).
+- Cleanup by explicit id match in FK-safe order (cost_entry/job_event ->
+  job -> vehicle -> customer -> person -> site), independently
+  re-verified 0 rows remaining across job/person/site tables via
+  separate follow-up queries after the script's own internal check.
+- uvicorn killed by its real listening PID (netstat), confirmed stopped
+  via a timed-out curl (exit 7) AND a follow-up netstat showing no
+  LISTENING entry on :8010.
+- Committed and pushed to origin/main (86c78db).
+- Deleted the temp file holding the staging connection string after use
+  -- never left on disk past this session.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No route to actually SEND/email a computed settlement to PDR Crew --
+  draft-and-hold only, per pdr_settlement.py's own module docstring and
+  standing SOUL.md rule. Any delivery mechanism is a separate, explicit
+  ask for Jed, not assumed.
+- No settlement history/persistence table (e.g. "mark this month's
+  settlement as sent/paid") -- the route computes on demand from live
+  job data every call, nothing is stored. Flagged as a plausible next
+  step once Jed confirms he wants this feature at all, not built
+  speculatively.
+- Same CCC ONE / payment_source enum / migration 006 cost-category /
+  gross_revenue audit-trail blockers as every prior cycle, unchanged.
+- Migration 006 (collision.site, needed by this whole feature via
+  site_id) still staging-only, unchanged -- this cycle only added an
+  app-layer consumer of it.
+
+Next up: ask Jed whether the closed_at-based month cutover assumption
+matches his actual PDR Crew settlement practice; a settlement
+history/persistence table if he wants "mark as sent" tracking; same
+payment_source enum / migration 006 cost-category / gross_revenue
+audit-trail / PATCH /sites items as every prior cycle, all still
+awaiting Jed.
+
+
 
