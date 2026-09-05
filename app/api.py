@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from app import db
 from app import repository as repo
-from app.models import CostCategory, JobStatus, StaffRole
+from app.models import CostCategory, JobCategory, JobStatus, RepairOrder, StaffRole
 
 app = FastAPI(
     title="Complete Collision Dashboard API (Phase 1, internal/local only)",
@@ -187,6 +187,49 @@ class EstimateCreateRequest(BaseModel):
     actor: str
 
 
+class JobIntakeCreateRequest(BaseModel):
+    """POST /jobs body — the actual RO intake path (handoff §2.1-2.3:
+    "customer signs JotForm -> imported as a job (RO)"). Closes a real
+    gap: every existing route in this file operates on a job that
+    already exists (GET/PATCH/transition/costs/estimates), but nothing
+    HTTP-reachable could create the first row. csv_import.py is the
+    other intake path (bulk); this is the single-record path for the
+    dashboard UI / a human typing in one new RO.
+
+    Deliberately does NOT create a brand-new platform.person — same
+    privileged-connection gap as provision_new_staff_user() (see that
+    route's comment above) and app.repository.create_person_and_customer()'s
+    own docstring. person_id must reference an ALREADY-EXISTING
+    platform.person row (looked up by an identity-service call this
+    codebase doesn't have yet, or an admin script run under a
+    privileged connection). Customer/vehicle/site are found-or-created
+    on top of that per repository.py's existing idempotent helpers.
+    """
+    person_id: int
+    customer_source: str = "walk_in"
+    elektrica_renter_ref: Optional[int] = None
+
+    vin: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    year: Optional[int] = None
+
+    site_name: str
+    site_address: Optional[str] = None
+
+    ro_number: str
+    category: str
+    status: str = "undecided"
+    claim_number: Optional[str] = None
+    insurer: Optional[str] = None
+    adjuster_name: Optional[str] = None
+    posture: Optional[str] = None
+    gross_revenue: Decimal = Decimal("0")
+    rent_utility_share: Decimal = Decimal("0")
+
+    actor: str
+
+
 def _ro_to_out(ro) -> RepairOrderOut:
     return RepairOrderOut(
         id=ro.id, ro_number=ro.ro_number, vehicle_id=ro.vehicle_id,
@@ -246,6 +289,65 @@ def get_job(ro_number: str, cur=Depends(get_cursor)):
     ro = repo.get_repair_order_by_ro_number(cur, ro_number)
     if ro is None:
         raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    return _ro_to_out(ro)
+
+
+@app.post("/jobs", response_model=RepairOrderOut)
+def create_job(body: JobIntakeCreateRequest, cur=Depends(get_cursor)):
+    """RO intake (see JobIntakeCreateRequest docstring for scope/gap
+    notes). Idempotent on ro_number: a duplicate ro_number is a 400, not
+    a silent overwrite -- callers that want "find or create" should GET
+    first, matching the discipline every other write route in this file
+    already follows (no route here ever guesses whether a human meant
+    create-new vs update-existing).
+    """
+    if repo.get_repair_order_by_ro_number(cur, body.ro_number) is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ro_number={body.ro_number!r} already exists -- use PATCH /jobs/{{ro_number}} to edit it.",
+        )
+    try:
+        category = JobCategory(body.category)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"category={body.category!r} must be one of {[c.value for c in JobCategory]}",
+        )
+    try:
+        status = JobStatus(body.status)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status={body.status!r} must be one of {[s.value for s in JobStatus]}",
+        )
+    if repo.get_person_by_id(cur, body.person_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"person_id={body.person_id!r} does not reference an existing platform.person row.",
+        )
+    try:
+        customer = repo.create_customer_for_existing_person(
+            cur, body.person_id, body.actor,
+            source=body.customer_source, elektrica_renter_ref=body.elektrica_renter_ref,
+        )
+        vehicle = repo.get_or_create_vehicle(
+            cur, customer.id, body.actor,
+            vin=body.vin, make=body.make, model=body.model, year=body.year,
+        )
+        site = repo.get_or_create_site(cur, body.site_name, body.actor, address=body.site_address)
+        ro = repo.create_repair_order(
+            cur,
+            RepairOrder(
+                ro_number=body.ro_number, vehicle_id=vehicle.id, customer_id=customer.id,
+                site_id=site.id, category=category, status=status,
+                claim_number=body.claim_number, insurer=body.insurer,
+                adjuster_name=body.adjuster_name, posture=body.posture,
+                gross_revenue=body.gross_revenue, rent_utility_share=body.rent_utility_share,
+            ),
+            body.actor,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _ro_to_out(ro)
 
 

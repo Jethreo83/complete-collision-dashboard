@@ -72,6 +72,18 @@ def _site_from_row(row) -> Site:
 # Customer
 # ---------------------------------------------------------------------------
 
+def get_person_by_id(cur, person_id: int) -> Optional[dict]:
+    """Read-only lookup against the shared platform.person table (no
+    collision-specific dataclass for it -- this codebase never owns
+    person rows, see create_person_and_customer()'s docstring). Used to
+    give a clean 400 ("no such person_id") instead of an unhandled FK
+    violation surfacing as a raw 500 when a caller (e.g. POST /jobs)
+    passes a person_id that doesn't exist -- found while smoke-testing
+    the new POST /jobs route against real staging (2026-09-07 cycle)."""
+    cur.execute("SELECT id FROM platform.person WHERE id = %s", (person_id,))
+    return cur.fetchone()
+
+
 def get_customer_by_person_id(cur, person_id: int) -> Optional[Customer]:
     cur.execute("SELECT * FROM collision.customer WHERE person_id = %s", (person_id,))
     row = cur.fetchone()

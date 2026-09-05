@@ -74,6 +74,89 @@ def test_get_job_not_found():
     check("test_get_job_not_found", r.status_code == 404)
 
 
+def _sample_customer(**overrides):
+    from app.models import Customer
+    defaults = dict(id=1, person_id=42, source="walk_in")
+    defaults.update(overrides)
+    return Customer(**defaults)
+
+
+def _sample_vehicle(**overrides):
+    from app.models import Vehicle
+    defaults = dict(id=1, customer_id=1, vin="1HGCM82633A123456", make="Honda", model="Accord", year=2019)
+    defaults.update(overrides)
+    return Vehicle(**defaults)
+
+
+def _sample_site(**overrides):
+    from app.models import Site
+    defaults = dict(id=1, name="South")
+    defaults.update(overrides)
+    return Site(**defaults)
+
+
+_CREATE_JOB_BODY = {
+    "person_id": 42, "site_name": "South", "ro_number": "RO-99999",
+    "category": "collision", "actor": "jed",
+}
+
+
+def test_create_job_success():
+    created = _sample_ro(id=1, ro_number="RO-99999")
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None), \
+         patch("app.api.repo.get_person_by_id", return_value={"id": 42}), \
+         patch("app.api.repo.create_customer_for_existing_person", return_value=_sample_customer()), \
+         patch("app.api.repo.get_or_create_vehicle", return_value=_sample_vehicle()), \
+         patch("app.api.repo.get_or_create_site", return_value=_sample_site()), \
+         patch("app.api.repo.create_repair_order", return_value=created) as mock_create:
+        r = client.post("/jobs", json=_CREATE_JOB_BODY)
+    check("test_create_job_success_status", r.status_code == 200, r.text)
+    check("test_create_job_success_body", r.json()["ro_number"] == "RO-99999")
+    args, kwargs = mock_create.call_args
+    ro_arg = args[1] if len(args) > 1 else kwargs.get("ro")
+    check("test_create_job_success_category_passed", ro_arg.category == JobCategory.COLLISION)
+
+
+def test_create_job_duplicate_ro_number_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro(ro_number="RO-99999")):
+        r = client.post("/jobs", json=_CREATE_JOB_BODY)
+    check("test_create_job_duplicate_ro_number_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_bad_category_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.post("/jobs", json={**_CREATE_JOB_BODY, "category": "not_a_category"})
+    check("test_create_job_bad_category_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_bad_status_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.post("/jobs", json={**_CREATE_JOB_BODY, "status": "not_a_real_status"})
+    check("test_create_job_bad_status_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_nonexistent_person_id_returns_400():
+    """Real bug found via HTTP smoke test against staging (2026-09-07):
+    a person_id that doesn't reference an existing platform.person row
+    used to fall through to an unhandled FK violation (raw 500), not a
+    clean 400. Fixed by checking repo.get_person_by_id() before
+    attempting any write; this test guards the regression."""
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None), \
+         patch("app.api.repo.get_person_by_id", return_value=None):
+        r = client.post("/jobs", json={**_CREATE_JOB_BODY, "person_id": 999999999})
+    check("test_create_job_nonexistent_person_id_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_repo_value_error_returns_400():
+    """e.g. customer_source is invalid (create_customer_for_existing_person
+    raises ValueError for a genuinely bad value, not silently accepted)."""
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None), \
+         patch("app.api.repo.get_person_by_id", return_value={"id": 42}), \
+         patch("app.api.repo.create_customer_for_existing_person", side_effect=ValueError("Unknown customer source")):
+        r = client.post("/jobs", json=_CREATE_JOB_BODY)
+    check("test_create_job_repo_value_error_returns_400", r.status_code == 400, r.text)
+
+
 def test_get_job_events():
     events = [
         JobEvent(id=1, job_id=1, to_status=JobStatus.CAME_IN, from_status=None, created_by="jed"),
@@ -412,7 +495,12 @@ def test_set_staff_active_unknown_returns_404():
 
 if __name__ == "__main__":
     tests = [
-        test_health, test_get_job_found, test_get_job_not_found, test_get_job_events,
+        test_health, test_get_job_found, test_get_job_not_found,
+        test_create_job_success, test_create_job_duplicate_ro_number_returns_400,
+        test_create_job_bad_category_returns_400, test_create_job_bad_status_returns_400,
+        test_create_job_nonexistent_person_id_returns_400,
+        test_create_job_repo_value_error_returns_400,
+        test_get_job_events,
         test_transition_job_success, test_transition_job_illegal_returns_400,
         test_transition_job_bad_status_value_returns_400,
         test_patch_job_intake_partial_update_only_passes_supplied_fields,

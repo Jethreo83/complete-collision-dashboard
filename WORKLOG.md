@@ -1839,6 +1839,111 @@ deferred):
 2. Same CCC ONE / content_manifest.json blockers as always.
 
 
+2026-09-07 (cron cycle, continuous-build)
+------------------------------------------
+Closed a real gap: every existing app/api.py route operated on a job
+that already existed (GET/PATCH/transition/costs/estimates) -- nothing
+HTTP-reachable could create the FIRST row for a new RO. csv_import.py
+was the only intake path (bulk CSV); the dashboard UI's natural
+single-record "new customer walks in" flow had nowhere to POST to.
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added POST /jobs + JobIntakeCreateRequest schema. Chains the existing
+  idempotent repository helpers in order: create_customer_for_existing_
+  person() -> get_or_create_vehicle() -> get_or_create_site() ->
+  create_repair_order(). Rejects a duplicate ro_number with 400 rather
+  than silently overwriting (GET-first is the documented way to check).
+  Deliberately does NOT create a brand-new platform.person row --
+  requires an already-existing person_id, same privileged-connection gap
+  as provision_new_staff_user() (this whole module is unauthenticated
+  and has no elevated-role connection to safely supply).
+
+app/repository.py
+  Added get_person_by_id() -- a plain existence check against
+  platform.person, added specifically to fix a bug the HTTP smoke test
+  below actually found (see below).
+
+test_api.py
+  6 new tests: success, duplicate-ro_number-400, bad-category-400,
+  bad-status-400, nonexistent-person_id-400 (regression guard for the
+  bug below), repo-ValueError-passthrough-400. Suite 97/97 (up from
+  91/91).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_create_job.py
+  Real HTTP-level smoke test (uvicorn + `requests`, not TestClient
+  mocks) against real staging.
+
+REAL BUG FOUND AND FIXED (not a hypothetical -- caught by actually
+running the smoke test against staging, not by code review)
+-----------------------------------------------------------------
+First smoke run: 8/9 checks passed, one genuine failure. POSTing a
+person_id that doesn't reference any real platform.person row fell
+through create_customer_for_existing_person()'s INSERT straight into an
+unhandled foreign-key violation -- surfaced to the HTTP caller as a raw
+500 Internal Server Error, not a clean 400 with a useful message. This
+is exactly the kind of bug test_api.py's mocked unit tests structurally
+cannot catch (the DB call itself is mocked out, so there's no FK
+constraint to violate) -- it only showed up because the smoke test ran
+against a real Postgres connection.
+
+Fix: added repo.get_person_by_id(), call it in the POST /jobs route
+before attempting create_customer_for_existing_person(), return 400
+with a specific message if the person_id doesn't exist. Added a
+regression-guard unit test (test_create_job_nonexistent_person_id_
+returns_400) so this can't silently regress even though it was
+originally only caught by the real-DB smoke test.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/status checked first: clean, up to date with origin/main,
+  no concurrent-session drift, no uncommitted edits from a prior
+  unattended run.
+- Full unit suite green before AND after the fix: 91/91 -> 97/97 (both
+  runs, via `python -m pytest -q` and standalone `python test_api.py`).
+- Real STAGING connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --extended` (reveals password inline);
+  confirmed a real query against it resolves to host
+  ep-bold-leaf-a5dr4amg (staging), not ep-damp-bird-a5vtcqmv
+  (production), before running anything against it.
+- uvicorn started against staging on :8010, /health confirmed 200
+  before running the smoke script.
+- First smoke run (pre-fix): 8/9, real failure identified (see above).
+  Applied the fix, killed the running uvicorn by its real LISTENING PID
+  from `netstat -ano | grep :8010 | grep LISTENING` (not the launcher's
+  reported PID -- same host-specific gotcha documented in earlier
+  cycles), confirmed stopped via a timed-out `curl` AND a follow-up
+  `netstat` showing no LISTENING entry, then started a fresh uvicorn
+  process so the fix was actually loaded (not trusting hot-reload).
+  Second smoke run (post-fix): 9/9.
+- Cleanup by explicit ro_number/VIN/email/site-name match (never a
+  blanket delete) -- confirmed by the smoke script's own internal
+  check AND a separate independent follow-up query afterward: 0 job, 0
+  vehicle, 0 person, 0 site rows remaining on staging.
+- uvicorn killed again at the end via the same netstat-PID discipline,
+  confirmed stopped.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 006/010 promotion status unchanged -- not touched.
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+- provision_new_staff_user() / create_person_and_customer() still have
+  no HTTP route (same privileged-connection gap) -- POST /jobs
+  deliberately requires an already-existing person_id for the identical
+  reason.
+- No CSV-upload HTTP route yet (importers remain CLI-only via
+  scripts/csv_import_cli.py).
+
+Next up: gross_revenue post-intake edit still needs an audit-trail
+design decision before building (carried over unchanged); same CCC ONE
+blockers as always.
+
+
+
 
 
 

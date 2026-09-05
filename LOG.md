@@ -5,6 +5,83 @@ Purpose: quick-scan index of what changed and why, for Jed's review
 without re-reading full transcripts. Full narrative/verification detail
 lives in WORKLOG.md; this file is the compact pointer into it.
 
+Session: 2026-09-07 (cron cycle, continuous-build — RO intake HTTP route,
+POST /jobs, plus a real 500->400 bug found and fixed via HTTP smoke test)
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added POST /jobs (JobIntakeCreateRequest schema) — closes a real gap:
+  every existing route only operated on a job that already exists
+  (GET/PATCH/transition/costs/estimates); nothing HTTP-reachable could
+  create the first row (csv_import.py was the only intake path). Chains
+  create_customer_for_existing_person() -> get_or_create_vehicle() ->
+  get_or_create_site() -> create_repair_order(), all pre-existing
+  idempotent repository helpers. Rejects a duplicate ro_number as 400
+  (not silent overwrite). Deliberately does NOT create a new
+  platform.person row — same privileged-connection gap as
+  provision_new_staff_user().
+
+app/repository.py
+  Added get_person_by_id() — read-only platform.person existence check.
+  Added specifically to fix a real bug found by the HTTP smoke test
+  below: passing a person_id that doesn't exist used to fall through to
+  an unhandled FK violation (raw 500), not a clean 400. POST /jobs now
+  checks this before attempting any write.
+
+test_api.py
+  6 new tests for POST /jobs (success, duplicate ro_number, bad
+  category, bad status, nonexistent person_id -- regression guard for
+  the bug above, repo ValueError passthrough). Suite now 97/97 (up from
+  91/91).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_create_job.py
+  Real HTTP-level smoke test (uvicorn + real `requests`, not TestClient
+  mocks) against real staging — same discipline as every other
+  scripts/_smoke_http_*.py in this repo. This is the run that actually
+  caught the person_id/500 bug before it reached test_api.py's mocked
+  tests (which can't catch an unhandled FK violation since the DB call
+  itself is mocked out).
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/status clean at start, no concurrent-session drift, no
+  uncommitted edits from a prior unattended run.
+- Full unit suite green before/after: 91/91 -> 97/97, no regressions.
+- Real STAGING connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --extended`; confirmed different host
+  (ep-bold-leaf-a5dr4amg) than production before use.
+- uvicorn started against staging on :8010, /health confirmed 200.
+- First smoke run: 8/9 passed, 1 genuine failure (nonexistent person_id
+  -> 500 instead of 400) — not a test bug, a real route bug. Fixed
+  (get_person_by_id() check added), uvicorn restarted (old PID killed
+  via netstat-confirmed listener PID + taskkill /F, confirmed stopped
+  via curl timeout before restarting), re-ran: 9/9 passed.
+- Cleanup by explicit ro_number/VIN/email/site-name match (never
+  blanket delete), independently re-verified 0 rows remaining by a
+  separate follow-up query after the smoke script's own internal check.
+- uvicorn killed again at the end (same PID-from-netstat discipline),
+  confirmed stopped via curl timeout + no LISTENING entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 006/010 (cost-derivation, site/cost_entry) — production
+  status unchanged from prior WORKLOG entries, not touched this cycle.
+- Same CCC ONE license / content_manifest.json export blockers as every
+  prior session, unchanged.
+- provision_new_staff_user() / create_person_and_customer() still have
+  no HTTP route (privileged-connection gap unchanged) — POST /jobs
+  deliberately requires an already-existing person_id for the same
+  reason.
+- No CSV-upload HTTP route (importers remain CLI-only).
+
+Next up: no route yet to revise gross_revenue post-intake (financial
+figure, needs an audit-trail design decision, carried over unchanged);
+same CCC ONE blockers as always.
+
+
 Session: 2026-09-06 (cron cycle, continuous-build — estimate/staff HTTP routes)
 
 FILES CREATED

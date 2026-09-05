@@ -433,6 +433,30 @@ and requires clarification before any live integration is built.
   coverage for existing application code, closing a real gap rather than
   building anything new speculatively.
 
+- **New this cron cycle (2026-09-07, continuous-build):** added
+  `POST /jobs` (RO intake) — closed a real gap: every prior route in
+  `app/api.py` only operated on a job that already existed
+  (GET/PATCH/transition/costs/estimates); nothing HTTP-reachable could
+  create the *first* row for a new RO (`app/csv_import.py` was the only
+  intake path, and that's bulk-CSV only). Chains the existing idempotent
+  repository helpers (`create_customer_for_existing_person` ->
+  `get_or_create_vehicle` -> `get_or_create_site` ->
+  `create_repair_order`); rejects a duplicate `ro_number` with 400
+  instead of silently overwriting; deliberately does not create a new
+  `platform.person` row (same privileged-connection gap as
+  `provision_new_staff_user()`). 6 new tests in `test_api.py` — suite now
+  97/97 (up from 91/91). **Real bug found and fixed by actually running
+  the HTTP smoke test against staging** (not caught by the mocked unit
+  tests, since they mock out the DB call entirely): a `person_id` that
+  doesn't reference a real `platform.person` row fell through to an
+  unhandled foreign-key violation, surfacing as a raw 500 instead of a
+  clean 400. Fixed with a new `app.repository.get_person_by_id()`
+  existence check, verified by re-running the smoke script against a
+  freshly-restarted `uvicorn` process (old one killed by its real
+  `netstat`-confirmed listener PID first) — first run 8/9, post-fix run
+  9/9. Cleanup by explicit ro_number/VIN/email/site-name match,
+  independently re-verified 0 rows remaining on staging afterward.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon
