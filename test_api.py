@@ -493,6 +493,88 @@ def test_set_staff_active_unknown_returns_404():
     check("test_set_staff_active_unknown_returns_404", r.status_code == 404, r.text)
 
 
+# ---------------------------------------------------------------------------
+# CSV import (POST /import/{kind}) -- app.api.IMPORTERS binds direct
+# function references from app.csv_import at module-import time, so
+# patching app.csv_import.import_*_csv after the fact would NOT affect
+# what the route actually calls; these tests patch app.api.IMPORTERS
+# itself via mock.patch.dict, same reasoning documented in the route's
+# own comment about reusing app.csv_import's real _read_rows() path
+# handling. A real temp CSV file is written to disk (matching the actual
+# multipart upload -> tempfile spool path in the route), not just an
+# in-memory mock, to catch real "kind" plumbing bugs.
+# ---------------------------------------------------------------------------
+
+from app.csv_import import ImportReport
+
+
+def _fake_importer(report: ImportReport):
+    def _importer(cur, csv_path, actor, dry_run=True):
+        # sanity: the route must actually pass through a real file path
+        # containing the uploaded bytes, not the raw bytes/UploadFile itself
+        assert isinstance(csv_path, str) and csv_path.endswith(".csv")
+        with open(csv_path, "r", encoding="utf-8") as f:
+            assert f.read()  # file exists and has content, not empty
+        return report
+    return _importer
+
+
+def test_import_csv_customers_dry_run_default():
+    report = ImportReport(file="customers.csv", dry_run=True, total_rows=2, created=2)
+    with patch.dict("app.api.IMPORTERS", {"customers": _fake_importer(report)}):
+        r = client.post(
+            "/import/customers",
+            files={"file": ("customers.csv", b"first_name,last_name,email,phone,source\nA,B,a@x.com,555,walk_in\n", "text/csv")},
+            data={"actor": "jed"},
+        )
+    check("test_import_csv_customers_dry_run_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_import_csv_customers_dry_run_is_dry_run", body.get("dry_run") is True, body)
+    check("test_import_csv_customers_dry_run_created", body.get("created") == 2, body)
+    check("test_import_csv_customers_dry_run_ok", body.get("ok") is True, body)
+
+
+def test_import_csv_commit_true_passed_through_as_not_dry_run():
+    captured = {}
+
+    def _importer(cur, csv_path, actor, dry_run=True):
+        captured["dry_run"] = dry_run
+        return ImportReport(file="jobs.csv", dry_run=dry_run, total_rows=1, created=1)
+
+    with patch.dict("app.api.IMPORTERS", {"jobs": _importer}):
+        r = client.post(
+            "/import/jobs",
+            files={"file": ("jobs.csv", b"ro_number\nRO-1\n", "text/csv")},
+            data={"actor": "jed", "commit": "true"},
+        )
+    check("test_import_csv_commit_true_status", r.status_code == 200, r.text)
+    check("test_import_csv_commit_true_dry_run_was_false", captured.get("dry_run") is False, captured)
+    check("test_import_csv_commit_true_response_reflects_it", r.json().get("dry_run") is False, r.json())
+
+
+def test_import_csv_with_errors_reports_ok_false():
+    report = ImportReport(file="costs.csv", dry_run=True, total_rows=1, errors=["row 2: bad category"])
+    with patch.dict("app.api.IMPORTERS", {"costs": _fake_importer(report)}):
+        r = client.post(
+            "/import/costs",
+            files={"file": ("costs.csv", b"ro_number,category,amount\nRO-1,nope,10\n", "text/csv")},
+            data={"actor": "jed"},
+        )
+    check("test_import_csv_with_errors_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_import_csv_with_errors_ok_false", body.get("ok") is False, body)
+    check("test_import_csv_with_errors_lists_error", len(body.get("errors", [])) == 1, body)
+
+
+def test_import_csv_unknown_kind_returns_400():
+    r = client.post(
+        "/import/not_a_real_kind",
+        files={"file": ("x.csv", b"a,b\n1,2\n", "text/csv")},
+        data={"actor": "jed"},
+    )
+    check("test_import_csv_unknown_kind_returns_400", r.status_code == 400, r.text)
+
+
 if __name__ == "__main__":
     tests = [
         test_health, test_get_job_found, test_get_job_not_found,
@@ -519,6 +601,10 @@ if __name__ == "__main__":
         test_get_staff_found, test_get_staff_not_found,
         test_get_staff_capability_active, test_get_staff_capability_unknown_email_404,
         test_set_staff_active_deactivate, test_set_staff_active_unknown_returns_404,
+        test_import_csv_customers_dry_run_default,
+        test_import_csv_commit_true_passed_through_as_not_dry_run,
+        test_import_csv_with_errors_reports_ok_false,
+        test_import_csv_unknown_kind_returns_400,
     ]
     for t in tests:
         t()

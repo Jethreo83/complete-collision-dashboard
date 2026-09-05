@@ -27,13 +27,15 @@ a human on demand until a real deploy decision is made.
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app import csv_import
 from app import db
 from app import repository as repo
 from app.models import CostCategory, JobCategory, JobStatus, RepairOrder, StaffRole
@@ -133,6 +135,19 @@ class CostEntryIn(BaseModel):
 
 class RecalculateRequest(BaseModel):
     actor: str
+
+
+class ImportReportOut(BaseModel):
+    """Mirrors app.csv_import.ImportReport (dataclass -> pydantic, plus a
+    computed `ok` bool since ImportReport.ok() is a method, not a field)."""
+    file: str
+    dry_run: bool
+    total_rows: int
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+    ok: bool
 
 
 class EstimateOut(BaseModel):
@@ -272,6 +287,14 @@ def _staff_to_out(s) -> StaffUserOut:
         id=s.id, person_id=s.person_id, role=s.role.value,
         google_email=s.google_email, active=s.active,
         provisioned_by_staff_user_id=s.provisioned_by_staff_user_id,
+    )
+
+
+def _report_to_out(r) -> ImportReportOut:
+    return ImportReportOut(
+        file=r.file, dry_run=r.dry_run, total_rows=r.total_rows,
+        created=r.created, updated=r.updated, skipped=r.skipped,
+        errors=r.errors, ok=r.ok(),
     )
 
 
@@ -549,3 +572,63 @@ def set_staff_active(google_email: str, body: StaffActiveRequest, cur=Depends(ge
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return _staff_to_out(staff)
+
+
+# ---------------------------------------------------------------------------
+# CSV import (2026-09-06 later cron cycle: closes the "No CSV-upload HTTP
+# route yet" gap flagged in every prior WORKLOG's "NOT DONE" section --
+# importers were CLI-only via scripts/csv_import_cli.py until now).
+#
+# Thin wrapper only: this route does NOT change app/csv_import.py's
+# scope/behavior at all -- same dry_run-by-default, same idempotent-on-
+# natural-key semantics, same "never talks to CCC ONE" rule (input here is
+# still just a CSV file, now delivered via multipart upload instead of a
+# local path arg). commit defaults to False, mirroring csv_import_cli.py's
+# --commit flag: a caller must explicitly opt into writing.
+#
+# The uploaded file is spooled to a real temp file on disk (not read into
+# memory as text) because app.csv_import._read_rows() takes a path, and
+# every importer already assumes csv.DictReader-over-a-real-file semantics
+# (encoding="utf-8-sig" BOM handling, etc.) -- reusing that exact function
+# rather than duplicating its parsing logic here. Temp file is always
+# cleaned up (finally block), success or failure.
+# ---------------------------------------------------------------------------
+
+IMPORTERS = {
+    "customers": csv_import.import_customers_csv,
+    "vehicles": csv_import.import_vehicles_csv,
+    "jobs": csv_import.import_jobs_csv,
+    "costs": csv_import.import_cost_entries_csv,
+}
+
+
+@app.post("/import/{kind}", response_model=ImportReportOut)
+async def import_csv(
+    kind: str,
+    file: UploadFile = File(...),
+    actor: str = Form(...),
+    commit: bool = Form(False),
+    cur=Depends(get_cursor),
+):
+    if kind not in IMPORTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind={kind!r} must be one of {sorted(IMPORTERS.keys())}",
+        )
+    importer = IMPORTERS[kind]
+    contents = await file.read()
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", delete=False
+        ) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        report = importer(cur, tmp_path, actor, dry_run=not commit)
+    finally:
+        if tmp_path is not None:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    return _report_to_out(report)

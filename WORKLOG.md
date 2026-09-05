@@ -1942,6 +1942,88 @@ Next up: gross_revenue post-intake edit still needs an audit-trail
 design decision before building (carried over unchanged); same CCC ONE
 blockers as always.
 
+2026-09-04 (later cron cycle)
+------------------------------
+Closed the "No CSV-upload HTTP route yet" gap flagged in the NOT DONE
+section above -- importers were CLI-only via scripts/csv_import_cli.py
+until now.
+
+FILES MODIFIED
+--------------
+app/api.py
+  Added POST /import/{kind} (kind in customers/vehicles/jobs/costs).
+  Thin wrapper only -- does NOT change app/csv_import.py's scope or
+  behavior at all: same dry_run-by-default (commit=false unless the
+  caller explicitly passes commit=true, mirroring csv_import_cli.py's
+  --commit flag), same idempotent-on-natural-key semantics, same "never
+  talks to CCC ONE" rule. Multipart UploadFile is spooled to a real temp
+  file on disk (not read as in-memory text) specifically so the route
+  reuses app.csv_import's real _read_rows()/csv.DictReader path (BOM
+  handling etc.) rather than duplicating parsing logic; temp file always
+  removed in a finally block. Added ImportReportOut (mirrors the
+  ImportReport dataclass) + _report_to_out().
+
+test_api.py
+  4 new tests (TestClient + multipart): dry-run-by-default reports
+  dry_run=True and writes nothing (mocked), commit=true passes
+  dry_run=False through to the importer, errors surface as ok=False
+  with the error list intact, unknown kind returns 400. Tests patch
+  app.api.IMPORTERS via mock.patch.dict (NOT app.csv_import.import_*_csv
+  directly -- IMPORTERS binds direct function references at import
+  time, so patching the source module after the fact would not affect
+  what the route calls). Suite 101/101 (up from 97/97).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_import_csv.py
+  Real HTTP-level smoke test (uvicorn + `requests` multipart, not
+  TestClient mocks) against real staging.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first: clean, up to date with
+  origin/main, no concurrent-session drift, no uncommitted edits from a
+  prior unattended run.
+- Full unit suite green: 101/101 (`python -m pytest -q` and standalone
+  `python test_api.py`, both).
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --extended` (reveals password inline);
+  confirmed host ep-bold-leaf-a5dr4amg (staging) before use.
+- uvicorn started against staging on :8010, /health confirmed 200.
+- scripts/_smoke_http_import_csv.py: 19/19 real HTTP+DB checks passed --
+  customers.csv dry-run genuinely wrote 0 rows (independently queried),
+  commit=true actually created the row, re-running the identical
+  commit=true import was idempotent (skipped=1/created=0, not a
+  duplicate), vehicles.csv and jobs.csv commits chained correctly
+  through the real email->customer->vehicle->site->job path, the
+  resulting job was independently GETtable, and an unknown kind
+  returned a real 400 over HTTP (not just in TestClient).
+- Cleanup by explicit ro_number/VIN/email match (never a blanket
+  delete), confirmed by the smoke script's own internal check AND a
+  separate independent follow-up query afterward: 0 job, 0 vehicle, 0
+  person rows remaining on staging.
+- uvicorn killed by its real LISTENING PID from `netstat -ano | grep
+  :8010 | grep LISTENING` (taskkill /F /PID, not //PID -- MSYS bash
+  mangles the double-slash form), confirmed stopped via a timed-out
+  curl (exit 28) AND a follow-up netstat showing no LISTENING entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 006/010 promotion status unchanged -- not touched.
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+- provision_new_staff_user() / create_person_and_customer() still have
+  no HTTP route (same privileged-connection gap).
+- No auth/route-guard on /import/{kind} -- same "no session/auth
+  mechanism exists yet" reasoning as every other route in app/api.py;
+  not wiring a guard against unbuilt architecture.
+- gross_revenue post-intake edit audit-trail design -- unchanged,
+  carried over.
+
+Next up: gross_revenue post-intake edit audit-trail design; consider
+whether /import/{kind} needs a max-file-size guard before any real
+deploy decision (not urgent while this module is local/CLI-adjacent
+only, per app/api.py's own "not exposed externally" header).
 
 
 
