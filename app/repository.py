@@ -119,6 +119,23 @@ def get_customer_by_person_id(cur, person_id: int) -> Optional[Customer]:
     return _customer_from_row(row) if row else None
 
 
+def get_customer_by_id(cur, customer_id: int) -> Optional[Customer]:
+    """Read-only lookup by the customer's own id -- closes a real gap:
+    every job route (GET /jobs, GET /jobs/{ro_number}) exposes a bare
+    customer_id int (RepairOrderOut.customer_id), and GET
+    /customers/{customer_id}/vehicles has taken a customer_id path param
+    since the prior cycle, but there was no way to look the customer
+    entity itself up by that same id -- only by person_id
+    (get_customer_by_person_id(), which requires already knowing the
+    person_id, not the customer_id a job response actually gives you).
+    A dashboard job-detail view showing "customer source: insurer_referred"
+    next to a job's bare customer_id has no route to call today without
+    this."""
+    cur.execute("SELECT * FROM collision.customer WHERE id = %s", (customer_id,))
+    row = cur.fetchone()
+    return _customer_from_row(row) if row else None
+
+
 def create_customer_for_existing_person(
     cur, person_id: int, actor: str, source: str = "walk_in",
     elektrica_renter_ref: Optional[int] = None,
@@ -859,6 +876,28 @@ def get_staff_user_by_google_email(cur, google_email: str) -> Optional[StaffUser
     )
     row = cur.fetchone()
     return _staff_user_from_row(row) if row else None
+
+
+def list_staff_users(cur, active_only: bool = False, role: Optional[StaffRole] = None) -> list[StaffUser]:
+    """List all staff_user rows, ordered by google_email -- closes a real
+    gap: POST /staff (provision) and GET /staff/{google_email} (single
+    lookup) have existed since the 2026-09-06 cycle, but nothing could
+    list the whole roster, which a dashboard "staff directory"/admin
+    view needs (the same "writer with no collection reader" gap
+    list_sites() closed for collision.site the prior cycle). Optional
+    active_only mirrors list_sites()'s own filter; optional role filter
+    is new here since staff (unlike sites) has a meaningful role
+    dimension to filter a directory view by."""
+    clauses = []
+    params: list = []
+    if active_only:
+        clauses.append("active = true")
+    if role is not None:
+        clauses.append("role = %s")
+        params.append(role.value)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    cur.execute(f"SELECT * FROM collision.staff_user{where} ORDER BY google_email", params)
+    return [_staff_user_from_row(row) for row in cur.fetchall()]
 
 
 def provision_staff_user_for_existing_person(

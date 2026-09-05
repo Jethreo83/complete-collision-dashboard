@@ -582,3 +582,43 @@ payment_source confirmation; migration 006 cost-category review;
 gross_revenue audit-trail design -- all unchanged, still awaiting Jed.
 
 
+Session: 2026-09 cron cycle (continuous-build -- GET /customers/{id},
+GET /staff app layer)
+
+FILES MODIFIED
+--------------
+app/repository.py -- get_customer_by_id() (read-only lookup by the
+customer's own id, closes gap: job responses expose bare customer_id,
+GET /customers/{id}/vehicles already takes it, but nothing looked the
+customer row up by it directly); list_staff_users() (roster listing
+w/ active_only + role filters, closes gap: POST /staff + GET /staff/
+{email} existed since 2026-09-06 but no roster view).
+app/api.py -- GET /customers/{customer_id}, GET /staff
+(?active_only=true&role=...).
+test_api.py -- 6 new tests, suite 146/146 (up from 140/140).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_get_customer_by_id.py -- 6/6 real HTTP checks vs
+staging (found round-trips id/person_id/source, unknown id 404,
+cleanup independently re-verified 0 rows).
+scripts/_smoke_http_list_staff.py -- 11/11 real HTTP checks vs staging
+(active manager + deactivated receptionist fixtures; unfiltered list
+includes both, active_only excludes deactivated, role filter excludes
+non-matching role, bad role -> 400; cleanup independently re-verified
+0 rows).
+
+VERIFICATION: git fetch/log/status clean at start (no concurrent
+drift). Full pytest 146/146 before commit. Both smoke scripts run
+against a real uvicorn process on staging (confirmed via
+inet_server_addr()-style host match before use), killed by real
+LISTENING PID via netstat, confirmed stopped via failed curl + no
+LISTENING entry.
+
+Next up: same open items as every prior cycle (migration 011
+payment_source confirmation, migration 006 cost-category review,
+gross_revenue audit-trail design, PATCH /sites/{id}) -- all still
+awaiting Jed. No remaining unwired repository reader functions found
+this cycle (get_customer_by_id/list_staff_users were the last two).
+
+

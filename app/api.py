@@ -844,6 +844,20 @@ def get_customer_by_person(person_id: int, cur=Depends(get_cursor)):
     return _customer_to_out(customer)
 
 
+@app.get("/customers/{customer_id}", response_model=CustomerOut)
+def get_customer(customer_id: int, cur=Depends(get_cursor)):
+    """Closes the gap flagged in repo.get_customer_by_id()'s docstring:
+    every job response exposes a bare customer_id int, and GET
+    /customers/{customer_id}/vehicles already takes this same id as a
+    path param, but nothing could look the customer row itself up by it
+    (only by person_id, via GET /customers/by-person/{person_id}) --
+    this is that direct lookup."""
+    customer = repo.get_customer_by_id(cur, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail=f"No customer with id={customer_id!r}")
+    return _customer_to_out(customer)
+
+
 @app.get("/customers/{customer_id}/vehicles", response_model=list[VehicleOut])
 def get_customer_vehicles(customer_id: int, cur=Depends(get_cursor)):
     return [_vehicle_to_out(v) for v in repo.get_vehicles_by_customer(cur, customer_id)]
@@ -988,6 +1002,28 @@ def provision_staff(body: StaffProvisionRequest, cur=Depends(get_cursor)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _staff_to_out(staff)
+
+
+@app.get("/staff", response_model=list[StaffUserOut])
+def list_staff(active_only: bool = False, role: Optional[str] = None, cur=Depends(get_cursor)):
+    """Directory/roster listing -- closes a real gap: POST /staff and
+    GET /staff/{google_email} have existed since the 2026-09-06 cycle
+    but nothing could list the whole roster (same class of gap as
+    list_sites()/GET /sites closed for collision.site last cycle).
+    Static route, placed above GET /staff/{google_email} for
+    readability only -- FastAPI matches "/staff" as its own literal
+    route regardless of declaration order relative to the
+    "/staff/{google_email}" path-parameter route."""
+    role_enum = None
+    if role is not None:
+        try:
+            role_enum = StaffRole(role)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"role={role!r} must be one of {[r.value for r in StaffRole]}",
+            )
+    return [_staff_to_out(s) for s in repo.list_staff_users(cur, active_only=active_only, role=role_enum)]
 
 
 @app.get("/staff/{google_email}", response_model=StaffUserOut)

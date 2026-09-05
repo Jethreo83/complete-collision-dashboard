@@ -532,6 +532,31 @@ and requires clarification before any live integration is built.
   its real listening PID (`netstat`), confirmed stopped via a timed-out
   `curl` + a follow-up `netstat` showing no `LISTENING` entry.
 
+- **New this cron cycle (continuous-build):** added `GET /customers/
+  {customer_id}` and `GET /staff` -- both close the same class of gap
+  as `GET /sites` last cycle (a writer/single-lookup existed with no
+  collection/direct-by-id reader). `GET /customers/{customer_id}`
+  closes the gap where every job response exposes a bare `customer_id`
+  int and `GET /customers/{customer_id}/vehicles` already takes that
+  same id as a path param, but nothing could look the customer row
+  itself up by it (only by `person_id`, via the existing `GET
+  /customers/by-person/{person_id}`). `GET /staff` (optional
+  `?active_only=true&role=...`) closes the gap where `POST /staff` and
+  `GET /staff/{google_email}` existed since 2026-09-06 but nothing
+  could list the whole roster for a dashboard staff-directory view. 6
+  new tests in `test_api.py` -- suite now 146/146 (up from 140/140).
+  **Verified by real HTTP execution against staging**:
+  `scripts/_smoke_http_get_customer_by_id.py` (6/6 checks: found
+  round-trips id/person_id/source correctly, unknown id 404s, cleanup
+  independently re-verified 0 rows) and `scripts/_smoke_http_list_staff.py`
+  (11/11 checks: unfiltered list includes both an active-manager and a
+  deactivated-receptionist fixture, `?active_only=true` excludes the
+  deactivated one, `?role=receptionist` excludes the manager, bad role
+  value returns a real 400, cleanup independently re-verified 0 rows).
+  Both ran against a real uvicorn process on staging, killed by its
+  real listening PID afterward, confirmed stopped via a failed `curl` +
+  a follow-up `netstat` showing no `LISTENING` entry.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

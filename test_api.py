@@ -592,6 +592,19 @@ def test_get_customer_by_person_not_found():
     check("test_get_customer_by_person_not_found", r.status_code == 404)
 
 
+def test_get_customer_by_id_found():
+    with patch("app.api.repo.get_customer_by_id", return_value=_sample_customer()):
+        r = client.get("/customers/1")
+    check("test_get_customer_by_id_found_status", r.status_code == 200, r.text)
+    check("test_get_customer_by_id_found_body", r.json()["id"] == 1, r.text)
+
+
+def test_get_customer_by_id_not_found():
+    with patch("app.api.repo.get_customer_by_id", return_value=None):
+        r = client.get("/customers/999")
+    check("test_get_customer_by_id_not_found", r.status_code == 404)
+
+
 def test_get_customer_vehicles():
     with patch("app.api.repo.get_vehicles_by_customer", return_value=[_sample_vehicle()]):
         r = client.get("/customers/1/vehicles")
@@ -806,6 +819,39 @@ def test_provision_staff_duplicate_returns_400():
             json={"person_id": 1, "role": "manager", "google_email": "jane.doe@completecollisions.com", "actor": "jed"},
         )
     check("test_provision_staff_duplicate_returns_400", r.status_code == 400, r.text)
+
+
+def test_list_staff():
+    with patch("app.api.repo.list_staff_users", return_value=[_sample_staff(), _sample_staff(id=2, google_email="bob@completecollisions.com")]) as m:
+        r = client.get("/staff")
+    check("test_list_staff_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_list_staff_count", len(body) == 2, body)
+    check("test_list_staff_default_filters", m.call_args.kwargs.get("active_only") is False and m.call_args.kwargs.get("role") is None, m.call_args)
+
+
+def test_list_staff_active_only_and_role():
+    with patch("app.api.repo.list_staff_users", return_value=[_sample_staff()]) as m:
+        r = client.get("/staff?active_only=true&role=manager")
+    check("test_list_staff_active_only_and_role_status", r.status_code == 200, r.text)
+    from app.models import StaffRole as _SR
+    check(
+        "test_list_staff_active_only_and_role_passed_through",
+        m.call_args.kwargs.get("active_only") is True and m.call_args.kwargs.get("role") == _SR.MANAGER,
+        m.call_args,
+    )
+
+
+def test_list_staff_empty():
+    with patch("app.api.repo.list_staff_users", return_value=[]):
+        r = client.get("/staff")
+    check("test_list_staff_empty_status", r.status_code == 200, r.text)
+    check("test_list_staff_empty_body", r.json() == [], r.text)
+
+
+def test_list_staff_bad_role_returns_400():
+    r = client.get("/staff?role=not_a_role")
+    check("test_list_staff_bad_role_returns_400", r.status_code == 400, r.text)
 
 
 def test_get_staff_found():
