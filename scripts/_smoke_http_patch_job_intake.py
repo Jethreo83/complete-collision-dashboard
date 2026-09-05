@@ -79,6 +79,15 @@ def cleanup(env_var, person_id, customer_id, vehicle_id, job_id):
         cur.execute("DELETE FROM collision.vehicle WHERE id = %s AND vin = %s", (vehicle_id, VIN))
         cur.execute("DELETE FROM collision.customer WHERE id = %s", (customer_id,))
         cur.execute("DELETE FROM platform.person WHERE id = %s AND email_normalized = %s", (person_id, PERSON_EMAIL))
+        # Bug found + fixed 2026-09-08 cron cycle: this cleanup never deleted
+        # the "Smoke HTTP Patch Site" row setup_prereqs() creates via
+        # get_or_create_site() -- left a permanent orphan row on shared
+        # staging every time this script ran. Delete by exact name match,
+        # only if nothing else references it.
+        cur.execute(
+            "DELETE FROM collision.site WHERE name = 'Smoke HTTP Patch Site' "
+            "AND NOT EXISTS (SELECT 1 FROM collision.job WHERE site_id = collision.site.id)"
+        )
 
 
 def verify_clean(env_var):

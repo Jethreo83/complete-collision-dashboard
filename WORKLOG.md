@@ -2559,5 +2559,104 @@ edit audit-trail design; migration 006 cost-category review -- all
 still awaiting Jed's input.
 
 
+Session: 2026-09-08 (cron cycle, continuous-build -- GET /sites,
+GET /sites/{id} app layer, closing a real gap: collision.site
+(migrations/006, STAGING ONLY) has had a writer (get_or_create_site(),
+used by POST /jobs and every CSV importer since migration 006) but no
+reader anywhere -- nothing HTTP-reachable could list sites or look one up
+by id, which a dashboard site-picker/filter UI needs (GET /jobs already
+supports filtering by site_id, but nothing could tell a caller what
+site_ids exist to filter by).
+
+FILES MODIFIED
+--------------
+app/repository.py
+  Added get_site_by_id() (read-only lookup by id) and list_sites()
+  (ORDER BY name, optional active_only=True filter -- no hard-delete path
+  for sites exists anywhere, matching the append-only discipline used
+  elsewhere in this schema; active is the only site lifecycle state).
+
+app/api.py
+  Added SiteOut response model + _site_to_out() helper, GET /sites
+  (?active_only=true), GET /sites/{site_id} (404 on unknown id).
+  Read-only routes only -- site creation stays inside
+  get_or_create_site()'s existing find-or-create path (POST /jobs, CSV
+  importers), no new POST /sites route added speculatively.
+
+test_api.py
+  5 new tests (list with/without active_only, empty list, get found/404).
+  Full suite now 140/140 (up from 135/135).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_sites.py
+  Real HTTP smoke test against staging (uvicorn + requests): creates one
+  active + one deactivated fixture site via get_or_create_site() + a
+  direct UPDATE, then hits the real HTTP routes.
+
+REAL BUG FOUND AND FIXED (incidental, found while writing the smoke test)
+--------------------------------------------------------------------------
+Three existing smoke scripts -- scripts/_smoke_http_create_estimate.py,
+scripts/_smoke_http_patch_job_intake.py, scripts/_smoke_http_import_csv.py
+-- each call get_or_create_site() (directly or via the CSV import path)
+to set up a fixture job, but their cleanup() functions never deleted the
+site row afterward, only the job/vehicle/customer/person rows built on
+top of it. Confirmed by direct query against staging BEFORE fixing
+anything: exactly 3 permanent orphan collision.site rows existed
+("Smoke HTTP Site", "Smoke HTTP Patch Site", "Smoke HTTP Import Site"),
+matching the 3 affected scripts exactly -- not a coincidence, a real
+accumulating leak every time any of those scripts ran on shared staging.
+Fixed all three cleanup() functions to also delete their site row (scoped
+by exact name match, guarded by "no job currently references this
+site_id" so a future run against a site that legitimately gained a real
+job reference wouldn't be blindly deleted). Confirmed via direct query
+that all 3 fixture sites had zero job references before deleting them,
+deleted them (DELETE ... rowcount == 3), independently re-queried
+collision.site afterward: 0 rows remain.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- Full pytest suite: 140/140 (up from 135/135), no regressions.
+- Direct query against staging confirmed the 3 pre-existing orphan site
+  rows, confirmed each had 0 job references, deleted them, independently
+  re-verified 0 remaining afterward -- all via separate follow-up
+  queries, not trusting the DELETE's own rowcount alone.
+- Started a real uvicorn process against staging (COLLISION_DB_ENV_VAR ->
+  COLLISION_STAGING_URL), confirmed /health 200, confirmed the real
+  LISTENING PID via netstat before treating it as up.
+- scripts/_smoke_http_sites.py run against the live server: 11/11 real
+  HTTP checks passed (GET /sites/{id} found w/ correct name/address/
+  active, unknown id -> 404, GET /sites with no filter includes both an
+  active and a deliberately-deactivated fixture, GET /sites?active_only=
+  true excludes the deactivated one -- the actual behavior this filter
+  exists to support). Cleanup by explicit id match, guarded the same way
+  as the incidental fix above; independently re-verified 0 remaining
+  fixture rows via a separate query after the script's own internal
+  check.
+- uvicorn killed by its real LISTENING PID (netstat), confirmed stopped
+  via a timed-out curl (000) AND a follow-up netstat showing no
+  LISTENING entry on :8010.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No POST /sites route -- site creation stays exclusively inside the
+  existing find-or-create path; a dedicated creation route wasn't asked
+  for and would just be a second way to do the same thing.
+- No PATCH /sites/{id} (e.g. to deactivate a site from the dashboard) --
+  not built speculatively; flagged as a plausible next step once a real
+  UI need for it exists.
+- Migration 006 (collision.site's own table) is still staging-only,
+  unchanged -- this session only added app-layer reads against whatever
+  it already is; no migration touched.
+- Same CCC ONE / payment_source enum / gross_revenue audit-trail
+  blockers as every prior cycle, unchanged.
+
+Next up: PATCH /sites/{id} (activate/deactivate) once a real dashboard UI
+need surfaces one; once Jed confirms (or corrects) the payment_source
+enum, promote migration 011; payment reversal/void design; gross_revenue
+post-intake edit audit-trail design; migration 006 cost-category review
+-- all still awaiting Jed's input.
+
 
 

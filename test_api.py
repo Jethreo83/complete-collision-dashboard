@@ -622,6 +622,50 @@ def test_get_vehicle_by_vin_not_found():
 
 
 # ---------------------------------------------------------------------------
+# Site routes (2026-09-08 cron cycle -- collision.site, migrations/006,
+# STAGING ONLY, has had a writer (get_or_create_site()) since it was
+# created but no reader anywhere; closes that gap)
+# ---------------------------------------------------------------------------
+
+def test_list_sites():
+    with patch("app.api.repo.list_sites", return_value=[_sample_site(), _sample_site(id=2, name="North")]) as m:
+        r = client.get("/sites")
+    check("test_list_sites_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_list_sites_count", len(body) == 2, body)
+    check("test_list_sites_names", {s["name"] for s in body} == {"South", "North"}, body)
+    check("test_list_sites_default_active_only_false", m.call_args.kwargs.get("active_only") is False, m.call_args)
+
+
+def test_list_sites_active_only():
+    with patch("app.api.repo.list_sites", return_value=[_sample_site()]) as m:
+        r = client.get("/sites?active_only=true")
+    check("test_list_sites_active_only_status", r.status_code == 200, r.text)
+    check("test_list_sites_active_only_passed_through", m.call_args.kwargs.get("active_only") is True, m.call_args)
+
+
+def test_list_sites_empty():
+    with patch("app.api.repo.list_sites", return_value=[]):
+        r = client.get("/sites")
+    check("test_list_sites_empty_status", r.status_code == 200, r.text)
+    check("test_list_sites_empty_body", r.json() == [], r.text)
+
+
+def test_get_site_found():
+    with patch("app.api.repo.get_site_by_id", return_value=_sample_site()):
+        r = client.get("/sites/1")
+    check("test_get_site_found_status", r.status_code == 200, r.text)
+    check("test_get_site_found_body", r.json()["name"] == "South", r.text)
+    check("test_get_site_found_active_default", r.json()["active"] is True, r.text)
+
+
+def test_get_site_not_found():
+    with patch("app.api.repo.get_site_by_id", return_value=None):
+        r = client.get("/sites/999")
+    check("test_get_site_not_found", r.status_code == 404)
+
+
+# ---------------------------------------------------------------------------
 # Content library routes (2026-09-05 cron cycle -- collision.content_item
 # app layer, closing the gap flagged since migrations/005 went to
 # production with no readers/writers)

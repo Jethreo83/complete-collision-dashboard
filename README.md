@@ -499,6 +499,39 @@ and requires clarification before any live integration is built.
   a 404). Cleanup by explicit VIN/email match, independently
   re-verified 0 rows remaining on staging via a separate query.
 
+- **New this cron cycle (2026-09-08, continuous-build):** added
+  `GET /sites` (`?active_only=true`) and `GET /sites/{site_id}` --
+  closes a real gap: `collision.site` (migrations/006, STAGING ONLY)
+  has had a writer (`get_or_create_site()`, used by `POST /jobs` and
+  every CSV importer since migration 006) since it was created, but no
+  reader anywhere in the app layer -- nothing HTTP-reachable could list
+  sites or look one up by id, which a dashboard site-picker/filter UI
+  needs (`GET /jobs` already supports filtering by `site_id`, but
+  nothing could tell a caller what `site_id`s exist to filter by).
+  Read-only routes only; site creation stays inside the existing
+  find-or-create path. 5 new tests in `test_api.py` -- suite now
+  140/140 (up from 135/135). **Incidental real bug found and fixed**
+  while writing this cycle's HTTP smoke test: three existing smoke
+  scripts (`scripts/_smoke_http_create_estimate.py`,
+  `scripts/_smoke_http_patch_job_intake.py`,
+  `scripts/_smoke_http_import_csv.py`) each create a fixture site via
+  `get_or_create_site()` but their `cleanup()` never deleted it,
+  leaking a permanent orphan row on shared staging every run --
+  confirmed by direct query before fixing anything: exactly 3 orphan
+  `collision.site` rows existed, matching the 3 affected scripts
+  exactly. Fixed all three, confirmed the 3 pre-existing orphans had 0
+  job references, deleted them, independently re-verified 0 remaining
+  afterward. **Verified by real HTTP execution against staging**
+  (`scripts/_smoke_http_sites.py`, 11/11 checks): one active + one
+  deliberately-deactivated fixture site, confirmed `GET /sites/{id}`
+  round-trips name/address/active correctly and 404s on an unknown id,
+  confirmed `GET /sites` with no filter includes both fixtures while
+  `?active_only=true` excludes the deactivated one (the actual behavior
+  the filter exists to support). Cleanup by explicit id match,
+  independently re-verified 0 remaining afterward. `uvicorn` killed by
+  its real listening PID (`netstat`), confirmed stopped via a timed-out
+  `curl` + a follow-up `netstat` showing no `LISTENING` entry.
+
 ## Deploy process (once schema work resumes)
 
 Same discipline as VLS/Elektrica: every migration applied to the Neon

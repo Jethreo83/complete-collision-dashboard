@@ -70,6 +70,15 @@ def cleanup(env_var, person_id):
             "DELETE FROM collision.customer WHERE person_id = %s", (person_id,),
         )
         cur.execute("DELETE FROM platform.person WHERE id = %s AND email_normalized = %s", (person_id, PERSON_EMAIL))
+        # Bug found + fixed 2026-09-08 cron cycle: this cleanup never deleted
+        # the "Smoke HTTP Import Site" row the CSV import path creates via
+        # get_or_create_site() -- left a permanent orphan row on shared
+        # staging every time this script ran. Delete by exact name match,
+        # only if nothing else references it.
+        cur.execute(
+            "DELETE FROM collision.site WHERE name = 'Smoke HTTP Import Site' "
+            "AND NOT EXISTS (SELECT 1 FROM collision.job WHERE site_id = collision.site.id)"
+        )
 
 
 def verify_clean(env_var):

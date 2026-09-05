@@ -223,6 +223,23 @@ class VehicleOut(BaseModel):
     customer_id: int
 
 
+class SiteOut(BaseModel):
+    """Mirrors collision.site (migrations/006, STAGING ONLY -- not yet
+    promoted to production, same posture as migration 011; see README's
+    'Open questions'/migration 006 header for the pending cost-category
+    review, which is a separate question from this table's own shape).
+    Closes a real gap: collision.site has had a writer
+    (get_or_create_site(), used by POST /jobs and the CSV importers) since
+    migration 006, but no reader anywhere in the app layer -- no way to
+    list sites or look one up by id, which any dashboard site-picker/
+    filter UI needs (GET /jobs already supports filtering by site_id but
+    nothing could tell a caller what site_ids exist)."""
+    id: int
+    name: str
+    address: Optional[str] = None
+    active: bool
+
+
 class ContentItemOut(BaseModel):
     """Mirrors collision.content_item (migrations/005, production).
     All manifest fields optional except filename -- see
@@ -443,6 +460,10 @@ def _vehicle_to_out(v) -> VehicleOut:
         id=v.id, vin=v.vin, make=v.make, model=v.model, year=v.year,
         customer_id=v.customer_id,
     )
+
+
+def _site_to_out(s) -> SiteOut:
+    return SiteOut(id=s.id, name=s.name, address=s.address, active=s.active)
 
 
 def _content_item_to_out(ci) -> ContentItemOut:
@@ -826,6 +847,28 @@ def get_customer_by_person(person_id: int, cur=Depends(get_cursor)):
 @app.get("/customers/{customer_id}/vehicles", response_model=list[VehicleOut])
 def get_customer_vehicles(customer_id: int, cur=Depends(get_cursor)):
     return [_vehicle_to_out(v) for v in repo.get_vehicles_by_customer(cur, customer_id)]
+
+
+# ---------------------------------------------------------------------------
+# Sites (migrations/006, STAGING ONLY -- collision.site not yet promoted
+# to production; see README's "Open questions" for the pending migration
+# 006 cost-category review, a separate question from this table's shape).
+# Read-only routes -- site rows are still only created via
+# get_or_create_site()'s find-or-create path (POST /jobs, CSV importers),
+# not via a dedicated POST /sites here.
+# ---------------------------------------------------------------------------
+
+@app.get("/sites", response_model=list[SiteOut])
+def get_sites(active_only: bool = False, cur=Depends(get_cursor)):
+    return [_site_to_out(s) for s in repo.list_sites(cur, active_only=active_only)]
+
+
+@app.get("/sites/{site_id}", response_model=SiteOut)
+def get_site(site_id: int, cur=Depends(get_cursor)):
+    site = repo.get_site_by_id(cur, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail=f"No site with id={site_id!r}")
+    return _site_to_out(site)
 
 
 @app.get("/vehicles/by-vin/{vin}", response_model=VehicleOut)

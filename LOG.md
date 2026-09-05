@@ -556,3 +556,29 @@ figure — needs an audit-trail design decision before building, not
 guessed at this cycle).
 
 
+Session: 2026-09-08 (cron cycle, continuous-build — GET /sites,
+GET /sites/{id} app layer)
+
+FILES MODIFIED
+--------------
+app/repository.py -- get_site_by_id(), list_sites(active_only=)
+app/api.py -- SiteOut model, GET /sites, GET /sites/{site_id}
+test_api.py -- 5 new tests, suite 140/140 (up from 135/135)
+scripts/_smoke_http_create_estimate.py, _smoke_http_patch_job_intake.py,
+_smoke_http_import_csv.py -- real bug fix: cleanup() never deleted the
+site row each script's setup created, leaking permanent orphan rows on
+shared staging. Confirmed 3 pre-existing orphans matching exactly,
+0 job references each, deleted, re-verified 0 remaining.
+
+FILES CREATED
+-------------
+scripts/_smoke_http_sites.py -- real HTTP smoke test, 11/11 checks
+passed against live staging (active/inactive fixture sites, filter
+behavior, 404 on unknown id), cleanup independently re-verified.
+
+Next up: PATCH /sites/{id} (activate/deactivate) once a real dashboard
+UI need surfaces one; migration 011 promotion pending Jed's
+payment_source confirmation; migration 006 cost-category review;
+gross_revenue audit-trail design -- all unchanged, still awaiting Jed.
+
+

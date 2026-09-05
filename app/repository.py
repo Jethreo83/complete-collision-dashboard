@@ -72,6 +72,31 @@ def _site_from_row(row) -> Site:
     )
 
 
+def get_site_by_id(cur, site_id: int) -> Optional[Site]:
+    """Read-only lookup by id. Closes a real gap: collision.site
+    (migrations/006, staging only) has had a writer (get_or_create_site())
+    since it was created, but no reader anywhere -- nothing HTTP-reachable
+    could list sites or look one up directly, which any future site-picker/
+    filter UI (dashboard job list already supports filtering jobs by
+    site_id via list_repair_orders()) needs. Read-only; site rows are still
+    only created via get_or_create_site()'s find-or-create path."""
+    cur.execute("SELECT * FROM collision.site WHERE id = %s", (site_id,))
+    row = cur.fetchone()
+    return _site_from_row(row) if row else None
+
+
+def list_sites(cur, active_only: bool = False) -> list[Site]:
+    """List all sites, ordered by name. active_only=True filters out
+    sites soft-deactivated via collision.site.active (no DELETE path for
+    sites exists anywhere in this codebase, matching the append-only/
+    no-hard-delete discipline used elsewhere in this schema)."""
+    if active_only:
+        cur.execute("SELECT * FROM collision.site WHERE active = true ORDER BY name")
+    else:
+        cur.execute("SELECT * FROM collision.site ORDER BY name")
+    return [_site_from_row(row) for row in cur.fetchall()]
+
+
 # ---------------------------------------------------------------------------
 # Customer
 # ---------------------------------------------------------------------------
