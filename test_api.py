@@ -74,6 +74,47 @@ def test_get_job_not_found():
     check("test_get_job_not_found", r.status_code == 404)
 
 
+def test_list_jobs_no_filters():
+    ros = [_sample_ro(id=1, ro_number="RO-10001"), _sample_ro(id=2, ro_number="RO-10002")]
+    with patch("app.api.repo.list_repair_orders", return_value=ros) as mocked:
+        r = client.get("/jobs")
+    check("test_list_jobs_no_filters_status", r.status_code == 200, r.text)
+    body = r.json()
+    check("test_list_jobs_no_filters_count", len(body) == 2, body)
+    _, kwargs = mocked.call_args
+    check(
+        "test_list_jobs_no_filters_defaults",
+        kwargs["status"] is None and kwargs["category"] is None
+        and kwargs["site_id"] is None and kwargs["customer_id"] is None
+        and kwargs["limit"] == 50 and kwargs["offset"] == 0,
+        kwargs,
+    )
+
+
+def test_list_jobs_with_filters_passes_enums_through():
+    with patch("app.api.repo.list_repair_orders", return_value=[]) as mocked:
+        r = client.get("/jobs?status=bodywork&category=collision&site_id=3&customer_id=7&limit=10&offset=20")
+    check("test_list_jobs_with_filters_status", r.status_code == 200, r.text)
+    _, kwargs = mocked.call_args
+    check(
+        "test_list_jobs_with_filters_values",
+        kwargs["status"] == JobStatus.BODYWORK and kwargs["category"] == JobCategory.COLLISION
+        and kwargs["site_id"] == 3 and kwargs["customer_id"] == 7
+        and kwargs["limit"] == 10 and kwargs["offset"] == 20,
+        kwargs,
+    )
+
+
+def test_list_jobs_bad_status_returns_400():
+    r = client.get("/jobs?status=not_a_real_status")
+    check("test_list_jobs_bad_status_returns_400", r.status_code == 400, r.text)
+
+
+def test_list_jobs_bad_category_returns_400():
+    r = client.get("/jobs?category=not_a_real_category")
+    check("test_list_jobs_bad_category_returns_400", r.status_code == 400, r.text)
+
+
 def _sample_customer(**overrides):
     from app.models import Customer
     defaults = dict(id=1, person_id=42, source="walk_in")
@@ -578,6 +619,8 @@ def test_import_csv_unknown_kind_returns_400():
 if __name__ == "__main__":
     tests = [
         test_health, test_get_job_found, test_get_job_not_found,
+        test_list_jobs_no_filters, test_list_jobs_with_filters_passes_enums_through,
+        test_list_jobs_bad_status_returns_400, test_list_jobs_bad_category_returns_400,
         test_create_job_success, test_create_job_duplicate_ro_number_returns_400,
         test_create_job_bad_category_returns_400, test_create_job_bad_status_returns_400,
         test_create_job_nonexistent_person_id_returns_400,

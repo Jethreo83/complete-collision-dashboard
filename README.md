@@ -283,7 +283,9 @@ and requires clarification before any live integration is built.
   second independent manual calculation). Staging reset to a clean mirror
   of production afterward — no test data persists.
 - **`app/api.py`** — thin FastAPI wrapper over `app/repository.py`:
-  `GET /jobs/{ro_number}`, `GET /jobs/{ro_number}/events`,
+  `GET /jobs/{ro_number}`, `GET /jobs` (list/browse with optional
+  status/category/site_id/customer_id filters + limit/offset paging,
+  added 2026-09-07), `GET /jobs/{ro_number}/events`,
   `POST /jobs/{ro_number}/transition`, `GET`/`POST /jobs/{ro_number}/costs`,
   `POST /jobs/{ro_number}/costs/recalculate`, `GET /health`. Deliberately
   **unauthenticated** — no session/identity mechanism exists yet to check
@@ -456,6 +458,25 @@ and requires clarification before any live integration is built.
   `netstat`-confirmed listener PID first) — first run 8/9, post-fix run
   9/9. Cleanup by explicit ro_number/VIN/email/site-name match,
   independently re-verified 0 rows remaining on staging afterward.
+
+- **New this cron cycle (2026-09-07, continuous-build, later):** added
+  `GET /jobs` (list/browse jobs with optional `status`/`category`/
+  `site_id`/`customer_id` filters, `limit`/`offset` paging) — closes a
+  real gap: every prior job route required already knowing a specific
+  `ro_number`, so there was no HTTP-reachable way to browse jobs at all
+  (needed by any future dashboard list view, e.g. "jobs currently in
+  bodywork"). New `app/repository.list_repair_orders()`, AND-combined
+  filters, `limit` capped at 200 server-side. 4 new tests in
+  `test_api.py` — suite now 105/105 (up from 101/101). **Verified by
+  real HTTP execution against staging** (`scripts/_smoke_http_list_jobs.py`,
+  11/11 checks): created 3 real fixture jobs with distinct category/
+  status combos via direct SQL, then confirmed through real HTTP GETs
+  that `site_id` filtering returns exactly those 3 (not more, guarding
+  against another concurrent track's staging data), combined filters
+  narrow correctly, `limit`/`offset` paging genuinely advances between
+  two different rows, and bad status/category values return real 400s.
+  Cleanup by explicit ro_number-prefix/VIN-prefix/email/site-name
+  match, independently re-verified 0 rows remaining on staging.
 
 ## Deploy process (once schema work resumes)
 

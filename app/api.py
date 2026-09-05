@@ -315,6 +315,52 @@ def get_job(ro_number: str, cur=Depends(get_cursor)):
     return _ro_to_out(ro)
 
 
+@app.get("/jobs", response_model=list[RepairOrderOut])
+def list_jobs(
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    site_id: Optional[int] = None,
+    customer_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+    cur=Depends(get_cursor),
+):
+    """Browse/page through jobs -- closes a real gap flagged this cycle:
+    every other job route requires already knowing a specific ro_number
+    (GET /jobs/{ro_number}), so there was no HTTP-reachable way to list
+    jobs at all (e.g. a dashboard's "jobs currently in bodywork" view, or
+    "everything at the South site"). Placed as a route ABOVE
+    GET /jobs/{ro_number} in this file's declaration order for
+    readability only -- FastAPI matches "/jobs" as its own static route
+    regardless of declaration order relative to the "/jobs/{ro_number}"
+    path-parameter route, so there's no literal-vs-parameter routing
+    ambiguity here to worry about.
+    """
+    status_enum = None
+    if status is not None:
+        try:
+            status_enum = JobStatus(status)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status={status!r} must be one of {[s.value for s in JobStatus]}",
+            )
+    category_enum = None
+    if category is not None:
+        try:
+            category_enum = JobCategory(category)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"category={category!r} must be one of {[c.value for c in JobCategory]}",
+            )
+    ros = repo.list_repair_orders(
+        cur, status=status_enum, category=category_enum,
+        site_id=site_id, customer_id=customer_id, limit=limit, offset=offset,
+    )
+    return [_ro_to_out(ro) for ro in ros]
+
+
 @app.post("/jobs", response_model=RepairOrderOut)
 def create_job(body: JobIntakeCreateRequest, cur=Depends(get_cursor)):
     """RO intake (see JobIntakeCreateRequest docstring for scope/gap

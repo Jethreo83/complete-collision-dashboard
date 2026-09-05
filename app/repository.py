@@ -274,6 +274,55 @@ def get_repair_order_by_ro_number(cur, ro_number: str) -> Optional[RepairOrder]:
     return _repair_order_from_row(row) if row else None
 
 
+def list_repair_orders(
+    cur,
+    status: Optional[JobStatus] = None,
+    category: Optional[JobCategory] = None,
+    site_id: Optional[int] = None,
+    customer_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[RepairOrder]:
+    """List/browse jobs with optional filters, newest-opened first.
+
+    Closes a real gap: every existing reader in this module requires
+    already knowing a specific ro_number (get_repair_order_by_ro_number)
+    -- there was no way to browse/page through jobs at all, which any
+    dashboard list view or 'jobs currently in bodywork' filter needs.
+    Filters are optional and AND-combined; all-None returns everything
+    (paginated). limit is capped at 200 server-side so a caller can't
+    accidentally request the entire table in one call.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    clauses = []
+    params: list = []
+    if status is not None:
+        clauses.append("status = %s")
+        params.append(status.value)
+    if category is not None:
+        clauses.append("category = %s")
+        params.append(category.value)
+    if site_id is not None:
+        clauses.append("site_id = %s")
+        params.append(site_id)
+    if customer_id is not None:
+        clauses.append("customer_id = %s")
+        params.append(customer_id)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
+    cur.execute(
+        f"""
+        SELECT * FROM collision.job
+        {where_sql}
+        ORDER BY opened_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        params,
+    )
+    return [_repair_order_from_row(r) for r in cur.fetchall()]
+
+
 def transition_job_status(
     cur, ro_number: str, target: JobStatus, actor: str, note: Optional[str] = None,
 ) -> RepairOrder:

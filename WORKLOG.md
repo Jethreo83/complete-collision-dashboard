@@ -2025,6 +2025,113 @@ whether /import/{kind} needs a max-file-size guard before any real
 deploy decision (not urgent while this module is local/CLI-adjacent
 only, per app/api.py's own "not exposed externally" header).
 
+2026-09-07 (continuous-build cycle)
+------------------------------------
+Re-checked git log/fetch/status first (clean, up to date with
+origin/main, no concurrent-session drift, no uncommitted edits left by
+a prior unattended run). Re-verified schema state by DIRECT query
+against both branches before touching anything (not trusting the last
+WORKLOG entry alone): staging (ep-bold-leaf-a5dr4amg) has all 10
+collision.* tables and 0 job rows; production (ep-damp-bird-a5vtcqmv)
+matches exactly -- same 10 tables, 0 job rows, collision_app's
+column-level UPDATE grant on collision.job correctly excludes
+labor_cost/direct_ro_costs (migration 010's REVOKE still in effect),
+and the cost_entry_recalculate_job_costs trigger is live. Confirms the
+prior cycle's "migration 010 promoted to production" claim by fresh,
+independent query rather than trusting the log entry.
+
+Picked the next real gap rather than guessing at unbuilt architecture:
+every existing job route in app/api.py (GET/PATCH/transition/costs/
+estimates) requires the caller to already know a specific ro_number.
+There was no HTTP-reachable way to browse/list jobs at all -- a real
+gap for any future dashboard UI ("jobs currently in bodywork," "all
+PDR jobs at South site"), and unlike gross_revenue's audit-trail
+question, this doesn't need Jed's input to build safely (pure
+additive read endpoint, no schema change, no new write path).
+
+FILES MODIFIED
+--------------
+app/repository.py
+  Added list_repair_orders() -- optional AND-combined filters
+  (status, category, site_id, customer_id), paginated (limit capped at
+  200 server-side, default 50; offset default 0), ordered newest-opened
+  first (opened_at DESC, id DESC).
+
+app/api.py
+  Added GET /jobs (declared above GET /jobs/{ro_number} for
+  readability -- FastAPI treats "/jobs" as a distinct static route
+  regardless of declaration order relative to a path-parameter route,
+  so there's no real routing ambiguity to worry about). Query params:
+  status, category, site_id, customer_id, limit, offset. Bad
+  status/category values return 400 with the valid-values list, same
+  pattern as every other enum-validating route in this file.
+
+test_api.py
+  4 new tests: no-filters passes correct defaults through to the
+  repository call, filters/limit/offset are passed through correctly
+  as parsed enums/ints (not raw strings), bad status returns 400, bad
+  category returns 400. Suite now 105/105 (up from 101/101).
+
+FILES CREATED
+-------------
+scripts/_smoke_http_list_jobs.py
+  Real HTTP-level smoke test (uvicorn + `requests`, not TestClient
+  mocks) against real staging -- exercises the actual SQL filter/
+  limit/offset logic against real Postgres rows, which mocks can't
+  catch.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status checked first: clean, up to date with
+  origin/main, no concurrent-session drift.
+- Direct schema/data query against BOTH staging and production before
+  any change (see above) -- confirms baseline rather than trusting the
+  prior cycle's log entry.
+- Full unit suite green: 105/105 (`python -m pytest -q`).
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --project-id aged-art-92489373 --extended`
+  (reveals password inline); confirmed host ep-bold-leaf-a5dr4amg
+  before use.
+- uvicorn started against staging on :8010, /health confirmed 200.
+- scripts/_smoke_http_list_jobs.py: 11/11 real HTTP+DB checks passed --
+  created 1 person/customer/site + 3 jobs with distinct category/
+  status combos directly via SQL fixtures (not through the API, to
+  keep the smoke test independent of POST /jobs), then confirmed
+  through real HTTP GETs: site_id filter returns exactly the 3 fixture
+  jobs (not more, in case another concurrent track has staging data),
+  site_id+category=collision narrows to exactly 2, site_id+
+  status=bodywork narrows to exactly 2, limit=1/offset=0 vs
+  limit=1/offset=1 return two different rows (pagination genuinely
+  advances), and bad status/category values return real 400s over
+  HTTP (not just in TestClient).
+- Cleanup by explicit ro_number-prefix/VIN-prefix/email/site-name
+  match (never a blanket delete), confirmed by the smoke script's own
+  internal check AND re-verified: 0 job, 0 vehicle, 0 person, 0 site
+  rows remaining on staging afterward.
+- uvicorn killed by its real LISTENING PID from `netstat -ano | grep
+  :8010 | grep LISTENING` (taskkill /F /PID), confirmed stopped via a
+  connection-refused curl (exit 7) AND a follow-up netstat showing no
+  LISTENING entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 006/010 promotion status unchanged -- not touched (both
+  already live on production per direct query above; no pending
+  promotion decision remains for either).
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+- provision_new_staff_user() / create_person_and_customer() still have
+  no HTTP route (same privileged-connection gap).
+- No auth/route-guard on GET /jobs -- same "no session/auth mechanism
+  exists yet" reasoning as every other route in app/api.py.
+- gross_revenue post-intake edit audit-trail design -- unchanged,
+  carried over, still needs Jed's input before building.
+
+Next up: gross_revenue post-intake edit audit-trail design (needs
+Jed's input); consider whether GET /jobs needs a total-count header/
+field for real pagination UI once a frontend is prioritized; same CCC
+ONE blockers as always.
+
 
 
 
