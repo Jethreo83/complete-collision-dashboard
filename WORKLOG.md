@@ -3252,3 +3252,96 @@ next buildable item: /staff/intake has no frontend consumer either --
 StaffAdminPage.tsx's POST /staff form still requires a known person_id,
 same gap NewJobPage had before this cycle.
 
+---
+
+Session: 2026-09-05 cron cycle (continuous-build -- New Staff intake
+screen, frontend consumer for POST /staff/intake; README fix for the
+stale-dev-server gotcha flagged by the prior cycle)
+
+FILES MODIFIED
+--------------
+web/src/api.ts -- added StaffIntakeRequest/StaffIntakeResult types +
+api.intakeStaff(), matching app/api.py's StaffIntakeRequest/StaffIntakeOut
+pydantic models 1:1 (backend route existed since a prior cycle but had NO
+frontend consumer -- StaffAdminPage.tsx's Provision form has always
+required an already-known person_id, same class of gap NewCustomerPage.tsx
+closed for customers last cycle, but nothing existed for staff onboarding).
+web/src/pages/StaffIntakePage.tsx (NEW) -- wraps POST /staff/intake,
+surfaces the real 3-way match_status outcome (attached/created/queued)
+same as NewCustomerPage. Client-side validates google_email ends in
+@completecollisions.com (migrations/009's CHECK constraint) before
+submitting, so a typo surfaces immediately instead of a round-trip 400.
+Explicitly separates the company google_email field (always written to
+staff_user) from personal_email/personal_phone/date_of_birth (used only
+for platform.person matching, never written to staff_user) per
+app/api.py's StaffIntakeRequest docstring warning.
+web/src/App.tsx -- wired /staff/new route + activeLabel handling.
+web/src/pages/StaffAdminPage.tsx -- added a cross-link to /staff/new for
+onboarding a new hire without a known person_id.
+web/README.md -- added a "check before trusting a running :8002 server"
+section: how to detect a stale dev server (missing recently-added
+routes vs git log timestamps) and how to actually kill it on Windows
+(the uvicorn worker's listening PID is often NOT the PID the launching
+shell reports -- recheck netstat after Stop-Process). This exact gotcha
+hit two separate cron cycles today; documenting it now instead of
+deferring again.
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+`npm run build` (tsc -b && vite build): clean, no new errors, dist
+output produced.
+`python -m pytest`: 179/179, unchanged (no backend changes this pass).
+
+REAL HTTP VERIFICATION AGAINST STAGING: found a uvicorn already
+LISTENING on :8002 (PID 132716, started 2:11 PM per
+`Get-Process | Select StartTime`) -- checked /openapi.json first per
+last cycle's own open item and found only 29 paths, missing both
+/staff/intake and /customers/intake (added per git log at 11:41 AM and
+10:25 AM respectively, hours before this server started) -- confirmed
+stale, not a concurrent teammate session. Killed it (Stop-Process
+-Force), started a fresh backend process against the exported staging
+neondb_owner DATABASE_URL (required: /staff/intake uses
+get_privileged_cursor same as /customers/intake), confirmed 31 paths
+including both intake routes.
+  - Direct curl POST to /staff/intake with a fresh marker
+    (cronverify.test<unix-ts>@completecollisions.com, no personal
+    contact info supplied -> forces the 'created' branch): got back
+    match_status=created, a real person_id, and a staff{id,person_id,
+    role,google_email,active,provisioned_by_staff_user_id} object --
+    verified this raw JSON shape matches the new TS
+    StaffIntakeResult/StaffUser interfaces field-for-field, not assumed
+    from reading api.py's pydantic model alone.
+  - Confirmed the new platform.person + collision.staff_user rows
+    existed by direct SQL query (person_id 12, staff_user id 1), then
+    deleted both by their specific ids (narrowly targeted, not a
+    blanket delete), reconfirmed 0 remaining cronverify.test% rows by
+    direct query.
+  - Killed the verification server process afterward -- note:
+    Stop-Process on the PID the background-launch tool reported did
+    NOT actually stop the listener; netstat afterward showed a
+    DIFFERENT PID still LISTENING on :8002. Had to re-check netstat,
+    find the real listening PID, and kill THAT one -- confirmed via
+    connection-refused curl. This is exactly the gotcha now documented
+    in web/README.md. Removed its log file. Working tree left clean
+    except the intended 5 files (4 source + README).
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- No Collision-specific person_match_queue resolution UI (same standing
+  note since the customer intake screen was built) -- a 'queued'
+  outcome on the new staff screen still points staff at Elektrica's
+  admin surface.
+- Same CCC ONE license question / migration 011 payment_source enum /
+  migration 006 cost-category review / gross_revenue audit-trail
+  design blockers as every prior cycle, unchanged, all still awaiting
+  Jed.
+
+Next up: same Jed-blocked items as every prior cycle. Both identity-
+match intake routes (/customers/intake and /staff/intake) now have
+frontend consumers -- no other backend route is known to be missing a
+consumer at this time; next buildable candidate is likely a
+Collision-specific person_match_queue resolution screen (currently
+punted to Elektrica's admin surface on every 'queued' outcome across
+both intake screens), or picking up the migration 006/011 review once
+Jed weighs in.
+

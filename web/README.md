@@ -35,6 +35,26 @@ bookmarks never silently point at the wrong app:
 Backend API port: **8002** (not 8000 — collided with a concurrently
 running sibling backend on this shared dev machine during this build).
 
+**Before trusting a backend already running on :8002** (e.g. found via
+`netstat -ano | grep :8002`), check it's not a stale leftover from an
+earlier session before assuming its test results are current:
+
+```bash
+curl -s http://127.0.0.1:8002/openapi.json | python -c \
+  "import json,sys; print(len(json.load(sys.stdin)['paths']))"
+# Compare against `grep -c '^@app\.' app/api.py` (rough route count) or
+# just check that a route you know was added recently (e.g. the most
+# recent commit's route) is present in the paths dict. If it's missing
+# but git log shows it was added hours ago, the running server predates
+# that commit — kill it (Windows: find the PID via netstat, then
+# `powershell Stop-Process -Id <pid> -Force`; the uvicorn worker PID is
+# often NOT the PID of the shell/wrapper that launched it — recheck
+# netstat after `Stop-Process` to confirm the listening PID actually
+# changed) and start a fresh one. This has bitten two separate cron
+# cycles (2026-09-05) that found a stale server missing recently-added
+# routes.
+```
+
 ## Auth (read before assuming this works like VLS)
 
 `app/api.py` has **no authentication** yet — every route is
