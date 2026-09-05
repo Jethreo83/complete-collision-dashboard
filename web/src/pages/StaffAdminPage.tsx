@@ -18,7 +18,7 @@ import { useAuth, getActor } from '../auth';
 const ROLE_OPTIONS: StaffRole[] = ['owner', 'manager', 'receptionist'];
 
 export default function StaffAdminPage() {
-  const { staff, refreshStaffList } = useAuth();
+  const { staff } = useAuth();
   const [rows, setRows] = useState<StaffUser[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +53,6 @@ export default function StaffAdminPage() {
       setNewEmail('');
       setNewRole('receptionist');
       load();
-      refreshStaffList();
     } catch (e: any) {
       setError(e.body?.detail ?? e.message);
     } finally {
@@ -69,7 +68,6 @@ export default function StaffAdminPage() {
     try {
       await api.setStaffActive(row.google_email, { active: !row.active, actor: getActor() });
       load();
-      refreshStaffList();
     } catch (e: any) {
       setError(e.body?.detail ?? e.message);
     }

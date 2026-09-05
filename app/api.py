@@ -4,17 +4,13 @@ Scope discipline, same as every other file in this repo:
   - No CCC ONE contact of any kind. Every endpoint here reads/writes only
     Complete Collision's own `collision` schema via the repository layer
     that already enforces Phase 1's manual/CSV-only rule.
-  - No authentication/session/role enforcement yet. `collision.
-    staff_user_capability()` (migrations/007) is the real permission gate
-    once a caller identity exists to check it against -- there is no
-    session/auth mechanism in this codebase yet to supply that identity,
-    so wiring a route-guard now would be guessing at unbuilt
-    architecture, not enforcing a real decision (same reasoning as
-    migrations/007's own header). Every route here is currently
-    unauthenticated by design, matching the "not yet built" item in
-    README.md, and is NOT wired to any process that exposes it
-    externally -- this module is CLI/local-server only until Jed
-    approves an actual deploy.
+  - Authentication (2026-09-05): every route requires a valid shell-issued
+    SSO JWT except /health and FastAPI's own doc UI -- see
+    enforce_staff_auth()/require_staff() below for the shared-secret
+    contract (mirrors Elektrica's identical pattern). Fail-closed:
+    JWT_SECRET unset -> 503, not open access. Still NOT wired to any
+    process that exposes it externally -- this module is CLI/local-server
+    only until Jed approves an actual deploy.
   - Connection string comes from the environment variable named by
     COLLISION_DB_ENV_VAR (default "DATABASE_URL"), read once at request
     time via app.db.cursor() -- never hardcoded, matching app/db.py's own
@@ -176,6 +172,21 @@ async def enforce_staff_auth(request, call_next):
     public_exact = {"/health"}
     public_prefixes = ("/docs", "/openapi.json", "/redoc")
     if path in public_exact or path.startswith(public_prefixes):
+        return await call_next(request)
+    if os.environ.get("COLLISION_DISABLE_AUTH") == "1":
+        # Test-suite escape hatch ONLY, mirroring Elektrica's identical
+        # ELEKTRICA_DISABLE_AUTH pattern -- test_api.py's TestClient
+        # predates this auth layer (added same-day, see this middleware's
+        # own module docstring) and exercises every route via
+        # app.dependency_overrides[get_cursor]/[get_privileged_cursor]
+        # with no Authorization header at all. Without this, every one
+        # of those tests 401s at this middleware before ever reaching
+        # the mocked repo.* call, which is exactly what broke 96/179
+        # tests the same cycle this auth layer was added -- caught by
+        # actually running pytest, not assumed fixed alongside the auth
+        # commit itself. conftest.py sets this env var for the pytest
+        # process only; it is never set in any real deploy (.env.example
+        # does not define it) -- not a general auth bypass toggle.
         return await call_next(request)
 
     authorization = request.headers.get("authorization")

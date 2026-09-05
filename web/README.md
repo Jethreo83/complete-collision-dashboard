@@ -57,13 +57,22 @@ curl -s http://127.0.0.1:8002/openapi.json | python -c \
 
 ## Auth (read before assuming this works like VLS)
 
-`app/api.py` has **no authentication** yet — every route is
-unauthenticated by design (see its module docstring). This frontend
-does **not** do real Google OAuth; `src/auth.tsx` is a lightweight
-"pick your own already-provisioned staff record" login (backed by
-`GET /staff/{email}`), used only to attribute writes (`actor` field) —
-**not a security boundary**. See the project handoff for the real-auth
-open item.
+`app/api.py` now enforces real authentication (as of the same-day
+2026-09-05 auth commit): every route requires a valid shell-issued
+SSO JWT (`Authorization: Bearer ...`) except `/health` and FastAPI's
+own doc UI — see `enforce_staff_auth()`/`require_staff()` in
+`app/api.py` for the shared-secret contract (mirrors Elektrica's
+identical pattern; fails closed with 503 if `JWT_SECRET` is unset
+server-side, 401/403 for missing/invalid/unentitled tokens).
+`src/auth.tsx` no longer does the old "pick your own already-
+provisioned staff record" login — it reads `?token=...` from the
+shell's redirect and calls `GET /me` to resolve the current staff
+record; `src/api.ts` attaches that token as `Authorization: Bearer`
+on every call. `src/pages/LoginPage.tsx` is now a passive landing
+page (no picker) since the shell is expected to be the thing issuing
+the token. Backend test suite (`test_api.py`/`conftest.py`) sets
+`COLLISION_DISABLE_AUTH=1` to bypass this middleware for `TestClient`
+requests only — never set that env var in a real deploy.
 
 ## Screens
 
