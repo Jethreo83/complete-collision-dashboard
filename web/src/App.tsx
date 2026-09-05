@@ -8,6 +8,7 @@ import NewCustomerPage from './pages/NewCustomerPage';
 import JobLookupPage from './pages/JobLookupPage';
 import StaffAdminPage from './pages/StaffAdminPage';
 import StaffIntakePage from './pages/StaffIntakePage';
+import SitesAdminPage from './pages/SitesAdminPage';
 import SettlementPage from './pages/SettlementPage';
 
 const NAV_ITEMS = [
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_NAV_ITEM = { to: '/staff', label: 'Staff' };
+const SITES_ADMIN_NAV_ITEM = { to: '/sites', label: 'Sites' };
 
 function AppShell() {
   const { staff, logout } = useAuth();
@@ -26,7 +28,7 @@ function AppShell() {
   if (!staff) return <LoginPage />;
 
   const isAdmin = staff.role === 'owner' || staff.role === 'manager';
-  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
+  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM, SITES_ADMIN_NAV_ITEM] : NAV_ITEMS;
 
   const activeLabel =
     navItems.find((n) => n.to === location.pathname)?.label ??
@@ -71,6 +73,7 @@ function AppShell() {
           <Route path="/settlement" element={<SettlementPage />} />
           <Route path="/staff" element={<StaffAdminPage />} />
           <Route path="/staff/new" element={<StaffIntakePage />} />
+          <Route path="/sites" element={<SitesAdminPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

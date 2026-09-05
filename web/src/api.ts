@@ -279,6 +279,9 @@ export const api = {
 
   // Sites
   listSites: (activeOnly = false) => apiFetch<Site[]>(`/sites?active_only=${activeOnly}`),
+  getSite: (siteId: number) => apiFetch<Site>(`/sites/${siteId}`),
+  setSiteActive: (siteId: number, body: { active: boolean; actor: string }) =>
+    apiFetch<Site>(`/sites/${siteId}/active`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // Customers / vehicles
   getCustomer: (customerId: number) => apiFetch<Customer>(`/customers/${customerId}`),
