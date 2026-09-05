@@ -11,6 +11,8 @@ from app.models import (
     JobCategory,
     JobStatus,
     JOB_STATUS_SEQUENCE,
+    Payment,
+    PaymentSource,
     RepairOrder,
     StaffRole,
     StaffUser,
@@ -58,6 +60,39 @@ def test_validate_transition_rejects_noop():
         assert False, "expected ValueError for same-status no-op"
     except ValueError:
         pass
+
+
+def test_payment_accepts_valid_check():
+    p = Payment(job_id=1, source=PaymentSource.CHECK, amount=Decimal("250.00"))
+    assert p.amount == Decimal("250.00")
+    assert p.external_transaction_id is None
+
+
+def test_payment_rejects_nonpositive_amount():
+    try:
+        Payment(job_id=1, source=PaymentSource.MANUAL, amount=Decimal("0"))
+        assert False, "expected ValueError for amount <= 0"
+    except ValueError:
+        pass
+    try:
+        Payment(job_id=1, source=PaymentSource.MANUAL, amount=Decimal("-5"))
+        assert False, "expected ValueError for negative amount"
+    except ValueError:
+        pass
+
+
+def test_payment_authorize_net_requires_external_transaction_id():
+    try:
+        Payment(job_id=1, source=PaymentSource.AUTHORIZE_NET, amount=Decimal("100"))
+        assert False, "expected ValueError for missing external_transaction_id"
+    except ValueError:
+        pass
+    # Same call, with the id set, succeeds:
+    p = Payment(
+        job_id=1, source=PaymentSource.AUTHORIZE_NET, amount=Decimal("100"),
+        external_transaction_id="txn_123",
+    )
+    assert p.external_transaction_id == "txn_123"
 
 
 def test_estimate_manual_requires_confirmed_content():

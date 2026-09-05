@@ -28,6 +28,8 @@ from app.models import (
     JobCategory,
     JobEvent,
     JobStatus,
+    Payment,
+    PaymentSource,
     RepairOrder,
     Site,
     StaffUser,
@@ -588,6 +590,88 @@ def get_estimates_for_job(cur, ro_number: str) -> list[Estimate]:
 def get_latest_estimate_for_job(cur, ro_number: str) -> Optional[Estimate]:
     estimates = get_estimates_for_job(cur, ro_number)
     return estimates[-1] if estimates else None
+
+
+# ---------------------------------------------------------------------------
+# Payment (migrations/011, STAGING ONLY -- collision.payment not yet
+# promoted to production; see migrations/011's header and
+# WORKLOG.md 2026-09-04 for the payment_source enum question still
+# awaiting Jed's confirmation).
+#
+# Append-only per the DB's own forbid-mutation trigger: no update/void
+# function exists here on purpose (a correction is a new row -- e.g. a
+# negative-amount reversal is NOT supported either, since the DB CHECK
+# requires amount > 0; a real reversal design is a genuine open question
+# for whenever this gets promoted, not guessed at here).
+# ---------------------------------------------------------------------------
+
+def create_payment(cur, payment: Payment, actor: str) -> Payment:
+    """Payment.__post_init__ already mirrors the DB's amount>0 and
+    authorize_net/external_transaction_id CHECK constraints, so a bad
+    call fails fast in Python with a clear ValueError before ever
+    reaching the DB -- same belt-and-suspenders pattern as CostEntry/
+    StaffUser. Does not verify job_id exists here; the DB's FK
+    (collision.payment.job_id REFERENCES collision.job) is the real
+    enforcement, and the API layer is responsible for translating that
+    into a clean 404 (see app/api.py's POST /jobs/{ro}/payments, same
+    pattern as POST /jobs/{ro}/costs and POST /jobs/{ro}/estimates)."""
+    cur.execute(
+        """
+        INSERT INTO collision.payment (
+            job_id, source, external_transaction_id, amount, received_at,
+            accounting_sync_ref, created_by
+        ) VALUES (%s, %s, %s, %s, COALESCE(%s, now()), %s, %s)
+        RETURNING *
+        """,
+        (
+            payment.job_id, payment.source.value, payment.external_transaction_id,
+            payment.amount, payment.received_at, payment.accounting_sync_ref, actor,
+        ),
+    )
+    return _payment_from_row(cur.fetchone())
+
+
+def list_payments_for_job(cur, ro_number: str) -> list[Payment]:
+    cur.execute(
+        """
+        SELECT p.* FROM collision.payment p
+        JOIN collision.job j ON j.id = p.job_id
+        WHERE j.ro_number = %s
+        ORDER BY p.received_at, p.id
+        """,
+        (ro_number,),
+    )
+    return [_payment_from_row(r) for r in cur.fetchall()]
+
+
+def get_job_payment_summary(cur, ro_number: str) -> Optional[dict]:
+    """Reads collision.job_payment_summary (migrations/011's view) for
+    one job by ro_number. Returns a plain dict (not a dataclass -- this
+    is a derived/aggregate read, not an entity with its own identity or
+    writes, same treatment as any other summary view in this codebase).
+    Returns None if the ro_number itself doesn't exist (distinguishes
+    "no such job" from "job exists, zero payments," which the view
+    itself already handles via its LEFT JOIN -- see migrations/011's
+    CHECK 1)."""
+    cur.execute(
+        """
+        SELECT jps.* FROM collision.job_payment_summary jps
+        JOIN collision.job j ON j.id = jps.job_id
+        WHERE j.ro_number = %s
+        """,
+        (ro_number,),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _payment_from_row(row) -> Payment:
+    return Payment(
+        id=row["id"], job_id=row["job_id"], source=PaymentSource(row["source"]),
+        external_transaction_id=row["external_transaction_id"], amount=row["amount"],
+        received_at=row["received_at"], accounting_sync_ref=row["accounting_sync_ref"],
+        created_at=row["created_at"], created_by=row["created_by"],
+    )
 
 
 # ---------------------------------------------------------------------------

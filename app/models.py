@@ -258,6 +258,54 @@ class CostEntry:
 VALID_COST_ENTRY_SOURCES = {"manual", "csv_import"}
 
 
+class PaymentSource(str, Enum):
+    """Matches collision.payment_source (migrations/011, STAGING ONLY —
+    not yet promoted to production). Values copied verbatim from
+    Elektrica's payment_source enum per SHARED_CONVENTIONS_NOTE.md
+    convention #5 ("one table shape") — migrations/011's own header
+    flags this as an ASSUMPTION FOR JED, not an independently confirmed
+    fact that Complete Collision actually uses Authorize.net. If Jed
+    corrects the real value set, update this enum AND the DB type
+    together (ALTER TYPE ... ADD/RENAME VALUE is the low-risk path noted
+    in the migration header) — do not let this Python copy silently
+    drift from the DB type, same discipline as CostCategory/JobStatus."""
+    AUTHORIZE_NET = "authorize_net"
+    CHECK = "check"
+    INSURER_EFT = "insurer_eft"
+    MANUAL = "manual"
+
+
+@dataclass
+class Payment:
+    """Mirrors collision.payment (migrations/011, staging only). Append-
+    only financial record — the DB forbids UPDATE/DELETE via trigger, so
+    there is deliberately no update/void function in repository.py; a
+    correction is a new row, never an edit (same as CostEntry/JobEvent).
+    external_transaction_id is required for source=AUTHORIZE_NET, both
+    here (mirroring the DB CHECK) and at the DB level, same
+    belt-and-suspenders pattern as StaffUser's domain check."""
+    job_id: int
+    source: PaymentSource
+    amount: Decimal
+    external_transaction_id: Optional[str] = None
+    received_at: Optional[datetime] = None
+    accounting_sync_ref: Optional[str] = None  # reserved, QuickBooks sync later (CC-6)
+    id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+
+    def __post_init__(self):
+        if self.amount <= 0:
+            raise ValueError(
+                "payment amount must be > 0 (collision.payment's CHECK constraint mirrors this)."
+            )
+        if self.source == PaymentSource.AUTHORIZE_NET and not self.external_transaction_id:
+            raise ValueError(
+                "external_transaction_id is required when source=authorize_net "
+                "(payment_external_txn_id_required_for_authorize_net CHECK constraint mirrors this)."
+            )
+
+
 @dataclass
 class Estimate:
     """Mirrors collision.estimate (migrations/003). Phase 1 only

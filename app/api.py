@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -38,7 +38,7 @@ from pydantic import BaseModel
 from app import csv_import
 from app import db
 from app import repository as repo
-from app.models import CostCategory, JobCategory, JobStatus, RepairOrder, StaffRole
+from app.models import CostCategory, JobCategory, JobStatus, PaymentSource, RepairOrder, StaffRole
 
 app = FastAPI(
     title="Complete Collision Dashboard API (Phase 1, internal/local only)",
@@ -158,6 +158,41 @@ class EstimateOut(BaseModel):
     draft_content: Optional[dict] = None
     confirmed_content: Optional[dict] = None
     confirmed_by: Optional[str] = None
+
+
+class PaymentOut(BaseModel):
+    """Mirrors collision.payment (migrations/011, STAGING ONLY -- not yet
+    promoted to production; see migrations/011 header and WORKLOG.md
+    2026-09-04 for the payment_source enum question awaiting Jed's
+    confirmation). These routes work against whatever DB the connection
+    string points at -- if run against production before promotion, the
+    underlying SQL will fail with a real "relation does not exist"
+    error (no silent fallback), which is the correct behavior rather
+    than this app layer trying to guess/gate environments itself."""
+    id: int
+    job_id: int
+    source: str
+    external_transaction_id: Optional[str] = None
+    amount: Decimal
+    received_at: str
+    accounting_sync_ref: Optional[str] = None
+
+
+class PaymentCreateRequest(BaseModel):
+    source: str
+    amount: Decimal
+    actor: str
+    external_transaction_id: Optional[str] = None
+    received_at: Optional[str] = None  # ISO 8601; None lets the DB default to now()
+    accounting_sync_ref: Optional[str] = None
+
+
+class JobPaymentSummaryOut(BaseModel):
+    job_id: int
+    ro_number: str
+    total_collected: Decimal
+    payment_count: int
+    last_payment_at: Optional[str] = None
 
 
 class StaffUserOut(BaseModel):
@@ -287,6 +322,15 @@ def _staff_to_out(s) -> StaffUserOut:
         id=s.id, person_id=s.person_id, role=s.role.value,
         google_email=s.google_email, active=s.active,
         provisioned_by_staff_user_id=s.provisioned_by_staff_user_id,
+    )
+
+
+def _payment_to_out(p) -> PaymentOut:
+    return PaymentOut(
+        id=p.id, job_id=p.job_id, source=p.source.value,
+        external_transaction_id=p.external_transaction_id, amount=p.amount,
+        received_at=p.received_at.isoformat() if p.received_at else None,
+        accounting_sync_ref=p.accounting_sync_ref,
     )
 
 
@@ -559,6 +603,78 @@ def get_job_latest_estimate(ro_number: str, cur=Depends(get_cursor)):
     if estimate is None:
         raise HTTPException(status_code=404, detail=f"No estimates for ro_number={ro_number!r}")
     return _estimate_to_out(estimate)
+
+
+# ---------------------------------------------------------------------------
+# Payments (migrations/011, STAGING ONLY -- collision.payment not yet
+# promoted to production, see migrations/011's header + WORKLOG.md
+# 2026-09-04 for the payment_source enum question awaiting Jed's
+# confirmation). App-layer build deliberately sequenced after the
+# schema question per this repo's own "schema first, then app layer"
+# order (same as every other migration) -- built now because Jed's
+# continuous-build instruction says move to the next buildable item
+# rather than stall, and this is buildable/testable against staging
+# regardless of the still-open enum question (adding/renaming enum
+# values later is a low-risk migration per 011's own header, so this
+# code isn't wasted if the value set changes).
+#
+# No PATCH/DELETE route -- collision.payment is append-only at the DB
+# level (forbid-mutation trigger); a correction is a new row.
+# ---------------------------------------------------------------------------
+
+@app.get("/jobs/{ro_number}/payments", response_model=list[PaymentOut])
+def get_job_payments(ro_number: str, cur=Depends(get_cursor)):
+    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    return [_payment_to_out(p) for p in repo.list_payments_for_job(cur, ro_number)]
+
+
+@app.post("/jobs/{ro_number}/payments", response_model=PaymentOut)
+def create_job_payment(ro_number: str, body: PaymentCreateRequest, cur=Depends(get_cursor)):
+    ro = repo.get_repair_order_by_ro_number(cur, ro_number)
+    if ro is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    try:
+        source = PaymentSource(body.source)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source={body.source!r} must be one of {[s.value for s in PaymentSource]}",
+        )
+    received_at = None
+    if body.received_at is not None:
+        try:
+            received_at = datetime.fromisoformat(body.received_at)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"received_at={body.received_at!r} must be a valid ISO 8601 timestamp",
+            )
+    from app.models import Payment as PaymentModel
+    try:
+        payment = PaymentModel(
+            job_id=ro.id, source=source, amount=body.amount,
+            external_transaction_id=body.external_transaction_id,
+            received_at=received_at, accounting_sync_ref=body.accounting_sync_ref,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    created = repo.create_payment(cur, payment, body.actor)
+    return _payment_to_out(created)
+
+
+@app.get("/jobs/{ro_number}/payments/summary", response_model=JobPaymentSummaryOut)
+def get_job_payments_summary(ro_number: str, cur=Depends(get_cursor)):
+    if repo.get_repair_order_by_ro_number(cur, ro_number) is None:
+        raise HTTPException(status_code=404, detail=f"No job with ro_number={ro_number!r}")
+    summary = repo.get_job_payment_summary(cur, ro_number)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"No payment summary for ro_number={ro_number!r}")
+    return JobPaymentSummaryOut(
+        job_id=summary["job_id"], ro_number=summary["ro_number"],
+        total_collected=summary["total_collected"], payment_count=summary["payment_count"],
+        last_payment_at=summary["last_payment_at"].isoformat() if summary["last_payment_at"] else None,
+    )
 
 
 # ---------------------------------------------------------------------------

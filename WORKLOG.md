@@ -2232,5 +2232,143 @@ post-intake edit audit-trail design also still needs Jed's input.
 
 
 
+2026-09-05 (cron cycle, continuous-build -- collision.payment app layer)
+------------------------------------------------------------------
+Re-checked git log/fetch/status first: clean, up to date with
+origin/main, no concurrent-session drift. Re-verified staging AND
+production schema state by direct query against both branches before
+touching anything (scripts/check_state.sql) -- production confirmed
+migrations 001-010 only (no collision.payment/job_payment_summary,
+no payment_source type), staging confirmed 001-011 as left by the
+prior cycle. No drift, matches WORKLOG's own account.
+
+Picked the next real gap the prior cycle explicitly flagged as
+deferred: "no app/repository.py or app/api.py code added yet for
+collision.payment" -- schema (migration 011) already existed on
+staging from the prior cycle, awaiting Jed's confirmation on the
+payment_source enum before PRODUCTION promotion, but building the app
+layer against staging is a legitimate next buildable item regardless
+(enum rename later is low-risk per migration 011's own header) -- not
+guessed-at architecture, a real documented follow-up.
+
+FILES MODIFIED
+--------------
+app/models.py
+  Added PaymentSource enum (mirrors collision.payment_source,
+  migrations/011) and Payment dataclass, with __post_init__ mirroring
+  the DB's amount>0 and authorize_net-requires-external_transaction_id
+  CHECK constraints (same belt-and-suspenders pattern as CostEntry/
+  StaffUser) -- confirmed by real execution to fail fast with a clear
+  ValueError before ever reaching the DB.
+
+app/repository.py
+  Added create_payment() (append-only insert, no update/void function
+  exists on purpose -- collision.payment forbids UPDATE/DELETE via
+  trigger, a correction is a new row), list_payments_for_job(),
+  get_job_payment_summary() (reads the migration-011 view, returns a
+  plain dict since it's a derived aggregate, not an owned entity).
+
+app/api.py
+  Added GET/POST /jobs/{ro_number}/payments and
+  GET /jobs/{ro_number}/payments/summary, with PaymentOut/
+  PaymentCreateRequest/JobPaymentSummaryOut schemas. No PATCH/DELETE
+  route (append-only). Routes are DB-agnostic by design -- if pointed
+  at production before promotion, the underlying SQL fails with a
+  real "relation does not exist" rather than the app layer trying to
+  guess/gate environments itself.
+
+migrations/011_collision_payment.sql
+  REAL BUG FOUND AND FIXED by the smoke test below: the original
+  job_payment_summary view's `COALESCE(SUM(p.amount), 0)` returns a
+  scale-less numeric for a zero-payment job (serializes as "0" over
+  JSON instead of "0.00") -- a real, user-visible financial-precision
+  inconsistency. Fixed with an explicit ::NUMERIC(12,2) cast, both in
+  this canonical source (011 was never promoted to production, no real
+  data was ever committed to collision.payment, so correcting it in
+  place is safe) and via a separate corrective file below applied to
+  staging (DROP+CREATE was required -- CREATE OR REPLACE VIEW rejects
+  a real column-type/scale change; confirmed by real Postgres error
+  first, then fixed).
+
+FILES CREATED
+-------------
+migrations/011b_fix_job_payment_summary_total_collected_scale.sql
+  The staging-applied fix described above, with the GRANT re-issued
+  (DROP VIEW does not preserve grants).
+
+scripts/_smoke_http_payments.py
+  Real HTTP smoke test against staging (uvicorn + requests), same
+  discipline as every other smoke script -- creates one job fixture,
+  exercises empty-list, zero-payment summary, a valid check payment, a
+  REJECTED authorize_net payment missing external_transaction_id (real
+  400, Payment.__post_init__ catching it before the DB), a second valid
+  authorize_net payment, the running total/count/last_payment_at,
+  attempts a real UPDATE against the created row through the DB
+  directly (confirms the append-only trigger genuinely rejects it, not
+  just "the app doesn't happen to try it"), and 404s on an unknown RO
+  across all three routes.
+
+FILES MODIFIED (tests)
+-----------------------
+test_models.py: 3 new tests for Payment (valid construction, rejects
+  amount<=0, authorize_net requires external_transaction_id).
+test_api.py: 9 new tests for the payment routes (mocked repository,
+  no DB dependency, same pattern as every other route's tests).
+Full suite now 118/118 (up from 105/105), no regressions.
+
+VERIFICATION PERFORMED (real execution, not claims)
+-----------------------------------------------------
+- git fetch/log/status clean at start, no concurrent drift.
+- Direct schema query against BOTH staging and production before any
+  change -- confirmed baseline, not trusted from the prior log entry.
+- Full unit suite green: 118/118 (`python -m pytest -q`), plus the
+  two standalone test_models.py/test_api.py runners independently
+  (18/18, 56/56) -- same "don't trust one runner" discipline as prior
+  cycles.
+- Real staging connection retrieved via `neon connection-string staging
+  --role-name neondb_owner --project-id aged-art-92489373 --extended`
+  (reveals password inline); confirmed host ep-bold-leaf-a5dr4amg
+  before use.
+- uvicorn started against staging on :8010, /health confirmed 200.
+- scripts/_smoke_http_payments.py: FIRST run found the real
+  total_collected scale bug above (test correctly failed rather than
+  silently passing). After the fix was applied to staging, RE-RAN:
+  19/19 checks passed for real, not just "no exception raised."
+- Independently re-verified 0 leftover job/vehicle/person/payment rows
+  on staging via a SEPARATE rolled-back query
+  (scripts/run_sql.py ... --rollback), not just trusting the smoke
+  script's own internal cleanup-check.
+- uvicorn killed by its real LISTENING PID from `netstat -ano | grep
+  :8010 | grep LISTENING` (taskkill /F /PID), confirmed stopped via a
+  curl exit/000 status AND a follow-up netstat showing no LISTENING
+  entry.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+- Migration 011 still NOT promoted to production -- payment_source
+  enum still needs Jed's confirmation first (unchanged from prior
+  cycle's flag). This cycle only built/verified the app layer against
+  staging; it does not change the promotion decision or promote
+  anything itself.
+- No payment reversal/void design -- collision.payment's amount>0
+  CHECK means a negative-amount correction row isn't currently
+  possible either; flagged as a genuine open design question for
+  whenever promotion happens, not guessed at here.
+- Real migration of cc_payment_audit.json / cc_payment_tracking.json
+  content -- still blocked on export access to "the mini" (unchanged).
+- Same CCC ONE license / content_manifest.json export blockers as
+  every prior session.
+- gross_revenue post-intake edit audit-trail design -- still needs
+  Jed's input, unchanged.
+
+Next up: once Jed confirms (or corrects) the payment_source enum,
+promote migration 011 (+ 011b's view fix, or fold it into 011 before
+promotion since it was never live) to production; payment reversal/
+void design; gross_revenue post-intake edit audit-trail design still
+needs Jed's input.
+
+
+
+
 
 

@@ -125,7 +125,7 @@ CREATE VIEW collision.job_payment_summary AS
 SELECT
   j.id AS job_id,
   j.ro_number,
-  COALESCE(SUM(p.amount), 0) AS total_collected,
+  COALESCE(SUM(p.amount), 0)::NUMERIC(12,2) AS total_collected,
   count(p.id) AS payment_count,
   max(p.received_at) AS last_payment_at
 FROM collision.job j

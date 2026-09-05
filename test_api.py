@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from app.api import app, get_cursor
 from app.models import (
     CostCategory, CostEntry, Estimate, EstimateSource, JobCategory,
-    JobEvent, JobStatus, RepairOrder, StaffRole, StaffUser,
+    JobEvent, JobStatus, PaymentSource, RepairOrder, StaffRole, StaffUser,
 )
 
 FAILED = []
@@ -448,6 +448,121 @@ def test_create_job_estimate_repo_value_error_returns_400():
 
 
 # ---------------------------------------------------------------------------
+# Payment routes (migrations/011, STAGING ONLY -- collision.payment not
+# yet promoted to production). Same "no DB dependency, mock repository"
+# discipline as every other route's tests in this file.
+# ---------------------------------------------------------------------------
+
+def _sample_payment(**overrides):
+    from app.models import Payment, PaymentSource
+    from datetime import datetime
+    defaults = dict(
+        id=1, job_id=1, source=PaymentSource.CHECK, amount=Decimal("250.00"),
+        external_transaction_id=None, received_at=datetime(2026, 9, 6, 12, 0, 0),
+        accounting_sync_ref=None,
+    )
+    defaults.update(overrides)
+    return Payment(**defaults)
+
+
+def test_get_job_payments():
+    payments = [_sample_payment(id=1, amount=Decimal("250.00")), _sample_payment(id=2, amount=Decimal("500.00"))]
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.list_payments_for_job", return_value=payments):
+        r = client.get("/jobs/RO-10001/payments")
+    check("test_get_job_payments_status", r.status_code == 200, r.text)
+    check("test_get_job_payments_count", len(r.json()) == 2, r.text)
+
+
+def test_get_job_payments_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.get("/jobs/RO-NOPE/payments")
+    check("test_get_job_payments_job_not_found", r.status_code == 404)
+
+
+def test_create_job_payment_success():
+    created = _sample_payment(id=5, source=PaymentSource.MANUAL, amount=Decimal("300.00"))
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.create_payment", return_value=created) as mocked:
+        r = client.post(
+            "/jobs/RO-10001/payments",
+            json={"source": "manual", "amount": "300.00", "actor": "jed"},
+        )
+    check("test_create_job_payment_success_status", r.status_code == 200, r.text)
+    check("test_create_job_payment_success_amount", r.json()["amount"] == "300.00", r.text)
+    # confirms the route passes ro.id (not the ro_number string) as job_id
+    payment_arg = mocked.call_args[0][1]
+    check("test_create_job_payment_uses_job_id", payment_arg.job_id == _sample_ro().id)
+
+
+def test_create_job_payment_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.post(
+            "/jobs/RO-NOPE/payments",
+            json={"source": "manual", "amount": "50.00", "actor": "jed"},
+        )
+    check("test_create_job_payment_job_not_found", r.status_code == 404)
+
+
+def test_create_job_payment_bad_source_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()):
+        r = client.post(
+            "/jobs/RO-10001/payments",
+            json={"source": "bitcoin", "amount": "50.00", "actor": "jed"},
+        )
+    check("test_create_job_payment_bad_source_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_payment_nonpositive_amount_returns_400():
+    """Payment.__post_init__ raises ValueError before repo.create_payment
+    is ever called -- this test does NOT mock create_payment, confirming
+    the route's model-construction try/except actually catches it."""
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()):
+        r = client.post(
+            "/jobs/RO-10001/payments",
+            json={"source": "manual", "amount": "0.00", "actor": "jed"},
+        )
+    check("test_create_job_payment_nonpositive_amount_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_payment_authorize_net_missing_txn_id_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()):
+        r = client.post(
+            "/jobs/RO-10001/payments",
+            json={"source": "authorize_net", "amount": "50.00", "actor": "jed"},
+        )
+    check("test_create_job_payment_authorize_net_missing_txn_id_returns_400", r.status_code == 400, r.text)
+
+
+def test_create_job_payment_bad_received_at_returns_400():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()):
+        r = client.post(
+            "/jobs/RO-10001/payments",
+            json={"source": "manual", "amount": "50.00", "actor": "jed", "received_at": "not-a-date"},
+        )
+    check("test_create_job_payment_bad_received_at_returns_400", r.status_code == 400, r.text)
+
+
+def test_get_job_payments_summary():
+    summary = {
+        "job_id": 1, "ro_number": "RO-10001",
+        "total_collected": Decimal("750.00"), "payment_count": 2,
+        "last_payment_at": None,
+    }
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=_sample_ro()), \
+         patch("app.api.repo.get_job_payment_summary", return_value=summary):
+        r = client.get("/jobs/RO-10001/payments/summary")
+    check("test_get_job_payments_summary_status", r.status_code == 200, r.text)
+    check("test_get_job_payments_summary_total", r.json()["total_collected"] == "750.00", r.text)
+
+
+def test_get_job_payments_summary_job_not_found():
+    with patch("app.api.repo.get_repair_order_by_ro_number", return_value=None):
+        r = client.get("/jobs/RO-NOPE/payments/summary")
+    check("test_get_job_payments_summary_job_not_found", r.status_code == 404)
+
+
+# ---------------------------------------------------------------------------
 # Staff routes (2026-09-06 backlog item #1)
 # ---------------------------------------------------------------------------
 
@@ -639,6 +754,13 @@ if __name__ == "__main__":
         test_get_job_latest_estimate_found, test_get_job_latest_estimate_none_yet,
         test_create_job_estimate_success, test_create_job_estimate_job_not_found,
         test_create_job_estimate_repo_value_error_returns_400,
+        test_get_job_payments, test_get_job_payments_job_not_found,
+        test_create_job_payment_success, test_create_job_payment_job_not_found,
+        test_create_job_payment_bad_source_returns_400,
+        test_create_job_payment_nonpositive_amount_returns_400,
+        test_create_job_payment_authorize_net_missing_txn_id_returns_400,
+        test_create_job_payment_bad_received_at_returns_400,
+        test_get_job_payments_summary, test_get_job_payments_summary_job_not_found,
         test_provision_staff_success, test_provision_staff_bad_role_returns_400,
         test_provision_staff_duplicate_returns_400,
         test_get_staff_found, test_get_staff_not_found,
