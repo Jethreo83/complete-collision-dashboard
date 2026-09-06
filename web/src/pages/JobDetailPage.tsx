@@ -4,7 +4,7 @@ import { useAuth, getActor } from '../auth';
 import {
   api, fmtMoney, money, JOB_STATUS_SEQUENCE,
   type RepairOrder, type JobEvent, type CostEntry, type CostCategory,
-  type Payment, type JobPaymentSummary, type PaymentSource,
+  type Payment, type JobPaymentSummary, type PaymentSource, type ContentItem,
 } from '../api';
 
 const COST_CATEGORIES: CostCategory[] = ['parts', 'labor', 'paint_materials', 'sublet', 'rental_reimbursement', 'other'];
@@ -18,6 +18,7 @@ export default function JobDetailPage() {
   const [costs, setCosts] = useState<CostEntry[] | null>(null);
   const [payments, setPayments] = useState<Payment[] | null>(null);
   const [paymentSummary, setPaymentSummary] = useState<JobPaymentSummary | null>(null);
+  const [contentItems, setContentItems] = useState<ContentItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [targetStatus, setTargetStatus] = useState('');
@@ -45,13 +46,15 @@ export default function JobDetailPage() {
       api.getJobCosts(roNumber),
       api.getJobPayments(roNumber).catch(() => []), // payments table is staging-only; tolerate 404/500 if not promoted
       api.getJobPaymentsSummary(roNumber).catch(() => null),
+      api.getJobContentItems(roNumber).catch(() => []),
     ])
-      .then(([j, e, c, p, ps]) => {
+      .then(([j, e, c, p, ps, ci]) => {
         setJob(j);
         setEvents(e);
         setCosts(c);
         setPayments(p);
         setPaymentSummary(ps);
+        setContentItems(ci);
         const nextIdx = JOB_STATUS_SEQUENCE.indexOf(j.status) + 1;
         setTargetStatus(JOB_STATUS_SEQUENCE[nextIdx] ?? '');
       })
@@ -263,6 +266,30 @@ export default function JobDetailPage() {
           </form>
           {costError && <p style={{ color: 'var(--cc-danger)', fontSize: 13, marginTop: 8 }}>{costError}</p>}
         </div>
+      </section>
+
+      <section style={{ marginBottom: 24 }}>
+        <SectionHeader>Photos / Content ({contentItems ? contentItems.length : 0})</SectionHeader>
+        {contentItems && contentItems.length > 0 ? (
+          <table className="cc-table">
+            <thead><tr><th>Filename</th><th>Type</th><th>Description</th><th>Tags</th></tr></thead>
+            <tbody>
+              {contentItems.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.url ? <a className="cc-link" href={c.url} target="_blank" rel="noreferrer">{c.filename}</a> : c.filename}</td>
+                  <td>{c.type ?? '—'}</td>
+                  <td>{c.description ?? '—'}</td>
+                  <td>{(c.derived_tags ?? []).length > 0 ? c.derived_tags.join(', ') : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p style={{ color: 'var(--cc-gray)' }}>No content items linked to this RO yet.</p>
+        )}
+        <p style={{ fontSize: 11.5, marginTop: 8 }}>
+          <Link to="/content" className="cc-link">Add or manage content items in the Content Library &rarr;</Link>
+        </p>
       </section>
 
       <section style={{ marginBottom: 24 }}>

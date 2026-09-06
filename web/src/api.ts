@@ -256,6 +256,76 @@ export interface StaffIntakeResult {
   staff: StaffUser | null;
 }
 
+// Content library (GET/POST /content-items, GET /jobs/{ro}/content-items,
+// PATCH /content-items/{id}/tags) — mirrors app/api.py's ContentItemOut/
+// ContentItemCreateRequest/ContentItemTagsUpdateRequest 1:1. Backed by
+// migrations/005 (collision.content_item, PRODUCTION). Dashboard-native
+// upload metadata only — no actual file bytes handled here; url/proxy_url/
+// drive_id point at wherever the caller already stored the file. See
+// app/api.py's Content library section comment for the "why no bulk
+// import yet" context (still blocked on export access to "the mini").
+export type DerivedTagsSource = 'ai' | 'human';
+
+export interface ContentItem {
+  id: number;
+  filename: string;
+  source_manifest_id: string | null;
+  import_source_file: string | null;
+  business: string | null;
+  collection: string | null;
+  description: string | null;
+  drive_id: string | null;
+  mime: string | null;
+  proxy_url: string | null;
+  ro_number: string | null;
+  service: string | null;
+  size: number | null;
+  smr: string | null;
+  source: string | null;
+  stage: string | null;
+  status: string | null;
+  thumbnail: string | null;
+  type: string | null;
+  uploaded_at: string | null;
+  uploader: string | null;
+  url: string | null;
+  video_type: string | null;
+  web_view_link: string | null;
+  derived_tags: string[];
+  derived_tags_source: DerivedTagsSource;
+}
+
+export interface ContentItemCreateRequest {
+  filename: string;
+  actor: string;
+  business?: string;
+  collection?: string;
+  description?: string;
+  drive_id?: string;
+  mime?: string;
+  proxy_url?: string;
+  ro_number?: string;
+  service?: string;
+  size?: number;
+  smr?: string;
+  source?: string;
+  stage?: string;
+  status?: string;
+  thumbnail?: string;
+  type?: string;
+  uploaded_at?: string; // ISO 8601; omit lets the DB default to now()
+  uploader?: string;
+  url?: string;
+  video_type?: string;
+  web_view_link?: string;
+}
+
+export interface ContentItemTagsUpdateRequest {
+  derived_tags: string[];
+  derived_tags_source: DerivedTagsSource;
+  actor: string;
+}
+
 export const api = {
   apiFetchPerson: (personId: string | number) => apiFetch<PersonPreview>(`/persons/${personId}`),
 
@@ -324,4 +394,19 @@ export const api = {
   // contact info instead of requiring an already-known person_id)
   intakeStaff: (body: StaffIntakeRequest) =>
     apiFetch<StaffIntakeResult>('/staff/intake', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Content library (photos/video/docs metadata; dashboard-native upload
+  // path only, see ContentItem's comment block above)
+  listContentItems: (params: { q?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== '') qs.set(k, String(v)); });
+    return apiFetch<ContentItem[]>(`/content-items?${qs.toString()}`);
+  },
+  getContentItem: (id: number) => apiFetch<ContentItem>(`/content-items/${id}`),
+  getJobContentItems: (roNumber: string) =>
+    apiFetch<ContentItem[]>(`/jobs/${encodeURIComponent(roNumber)}/content-items`),
+  createContentItem: (body: ContentItemCreateRequest) =>
+    apiFetch<ContentItem>('/content-items', { method: 'POST', body: JSON.stringify(body) }),
+  updateContentItemTags: (id: number, body: ContentItemTagsUpdateRequest) =>
+    apiFetch<ContentItem>(`/content-items/${id}/tags`, { method: 'PATCH', body: JSON.stringify(body) }),
 };

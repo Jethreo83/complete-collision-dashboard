@@ -10,11 +10,13 @@ import StaffAdminPage from './pages/StaffAdminPage';
 import StaffIntakePage from './pages/StaffIntakePage';
 import SitesAdminPage from './pages/SitesAdminPage';
 import SettlementPage from './pages/SettlementPage';
+import ContentLibraryPage from './pages/ContentLibraryPage';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Jobs' },
   { to: '/customers/new', label: 'New Customer' },
   { to: '/lookup', label: 'Look Up RO' },
+  { to: '/content', label: 'Content Library' },
   { to: '/settlement', label: 'PDR Settlement' },
 ];
 
@@ -36,6 +38,7 @@ function AppShell() {
       : location.pathname === '/customers/new' ? 'New Customer'
       : location.pathname === '/staff/new' ? 'Onboard Staff'
       : location.pathname.startsWith('/jobs/') ? 'Job Detail'
+      : location.pathname === '/content' ? 'Content Library'
       : 'Complete Collision');
 
   return (
@@ -70,6 +73,7 @@ function AppShell() {
           <Route path="/customers/new" element={<NewCustomerPage />} />
           <Route path="/jobs/:roNumber" element={<JobDetailPage />} />
           <Route path="/lookup" element={<JobLookupPage />} />
+          <Route path="/content" element={<ContentLibraryPage />} />
           <Route path="/settlement" element={<SettlementPage />} />
           <Route path="/staff" element={<StaffAdminPage />} />
           <Route path="/staff/new" element={<StaffIntakePage />} />
