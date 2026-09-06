@@ -3494,3 +3494,91 @@ person_match_queue resolution screen, or the migration 006/011 review
 once Jed weighs in) -- this cycle was entirely a fix-the-fallout
 cycle, no new feature surface added.
 
+
+2026-09-05 (cron cycle -- Content Library frontend, closes content_item's missing consumer)
+------------------------------------------------------------------
+git fetch/status clean at start (up to date with origin/main at
+915eaf4, no concurrent drift). Ran the full test suite + frontend
+build before touching anything: 179/179 pytest, clean npm build --
+both actually green this time (unlike the auth-commit incident two
+cycles ago).
+
+Picked the next real gap by the same method as every prior cycle
+(grep every app/api.py route against web/src/api.ts's api object):
+POST /content-items, GET /content-items(?q=...), GET
+/jobs/{ro_number}/content-items, PATCH /content-items/{id}/tags have
+existed since the 2026-09-05 "collision.content_item app layer"
+cycle, verified working via a real HTTP smoke test at the time, but
+had ZERO frontend consumer -- same class of gap SitesAdminPage/
+StaffIntakePage closed for their own routes in earlier cycles.
+Closed it. No backend/schema changes this cycle.
+
+FILES ADDED
+-----------
+web/src/pages/ContentLibraryPage.tsx -- list/search (to_tsvector
+description + tag search), an "Add Content Item" metadata form
+(filename required; ro_number/type/url/description optional -- no
+file bytes handled, matching every other manually-entered field in
+this codebase), and inline tag editing (always recorded as
+derived_tags_source='human', no AI tagging pipeline exists yet).
+
+FILES MODIFIED
+--------------
+web/src/api.ts -- ContentItem/ContentItemCreateRequest/
+ContentItemTagsUpdateRequest types (mirror app/api.py's pydantic
+schemas 1:1) + 5 new api.* methods.
+web/src/App.tsx -- /content route + "Content Library" nav item.
+web/src/pages/JobDetailPage.tsx -- new "Photos / Content" section
+(GET /jobs/{ro_number}/content-items, tolerant of empty/404 same as
+the payments section), links out to the Content Library.
+
+VERIFIED BY REAL EXECUTION
+---------------------------
+- git fetch/status clean before and after -- no concurrent drift.
+- python -m pytest: 179/179 (unchanged, no backend touched).
+- npm run build (tsc -b && vite build): clean.
+- Real HTTP verification against staging (confirmed ep-bold-leaf via
+  `neon branches list`, not ep-damp-bird production). Got staging
+  neondb_owner creds via `neon connection-string staging --role-name
+  neondb_owner --extended` (CLI printed the password directly this
+  time -- no REST API reveal_password round-trip needed). Started a
+  fresh uvicorn on :8012 with a throwaway JWT_SECRET; confirmed
+  unauthenticated -> 401 (prior cycle's auth middleware still
+  enforced); minted a real HS256 JWT for an existing active owner
+  staff_user (operations@completecollisions.com) via pyjwt, GET /me
+  confirmed it. Exercised the exact calls the new frontend makes:
+  POST /content-items (marker row created), GET /content-items?q=
+  (to_tsvector search found the marker by description text), PATCH
+  /content-items/{id}/tags (persisted -- confirmed by a SEPARATE
+  follow-up GET, not just the PATCH response echo), GET
+  /jobs/{ro_number}/content-items against a real existing RO
+  (FE-SMOKE-001, found via GET /jobs) returning the item just
+  created against it, and against a nonexistent RO (404, unchanged
+  behavior). Cleaned up both marker rows by an explicit `filename
+  LIKE 'cron-verify-%'` DELETE, independently re-verified 0 remaining
+  via a separate COUNT query. Killed uvicorn by its real LISTENING
+  PID via netstat/taskkill, confirmed stopped via a timed-out curl
+  (000) AND a follow-up netstat showing no LISTENING entry. Deleted
+  the throwaway one-off verification scripts after use (not
+  committed -- this repo's real smoke scripts live in scripts/ and
+  are reusable; these weren't).
+- Pushed f80d83b to origin/main, re-fetched and confirmed it landed.
+
+NOT DONE / EXPLICITLY DEFERRED
+-------------------------------
+Same CCC ONE license question / migration 011 payment_source
+confirmation / migration 006 cost-category review / gross_revenue
+audit-trail design blockers as every prior cycle, unchanged, all
+still awaiting Jed. No AI-assisted tag generation (still no AI
+tagging pipeline) -- only the human-editable half of handoff
+Sec3.1's "AI-assisted, human-editable" tagging is closed. No bulk
+content_manifest.json importer -- still blocked on export access to
+"the mini".
+
+Next up: same as every recent cycle -- Collision-specific
+person_match_queue resolution screen (still punted to Elektrica's
+admin surface on every intake screen's "queued" outcome), or the
+migration 006/011 review once Jed weighs in. No remaining known
+backend route without a frontend consumer found this cycle (checked
+again after adding Content Library).
+
